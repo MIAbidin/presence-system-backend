@@ -1,0 +1,17 @@
+# docker-compose.yml
+services:
+  db:
+    image: pgvector/pgvector:pg16   # image resmi pgvector — sudah include PostgreSQL 16 + pgvector
+    container_name: presensi_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: passwordkamu
+      POSTGRES_DB: presensi_db
+    ports:
+      - "5432:5432"             # akses dari laptop tetap via localhost:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # data tersimpan permanen walau container restart
+
+volumes:
+  pgdata:
