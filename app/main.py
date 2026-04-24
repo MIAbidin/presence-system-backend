@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import auth, face, sesi
+from app.routers import auth, face, sesi, presensi
 
 app = FastAPI(
     title="Presensi Face Recognition API",
@@ -20,7 +20,8 @@ app.add_middleware(
 # Daftarkan semua router
 app.include_router(auth.router)
 app.include_router(face.router)
-app.include_router(sesi.router) 
+app.include_router(sesi.router)
+app.include_router(presensi.router) 
 
 @app.get("/")
 def root():

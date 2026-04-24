@@ -16,6 +16,7 @@ from app.models.face_embedding import FaceEmbedding
 from app.models.matakuliah import Matakuliah
 from app.models.sesi import SesiPresensi
 from app.models.kode_usage import KodeUsage
+from app.models.presensi import Presensi
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
