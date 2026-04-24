@@ -7,6 +7,7 @@ Password semua akun: password123
 from app.database.db import SessionLocal, engine
 from app.models.user import User, UserRole, Base
 from app.services.auth_service import hash_password
+from app.models.matakuliah import Matakuliah
 
 # Pastikan tabel sudah ada
 Base.metadata.create_all(bind=engine)
@@ -108,41 +109,55 @@ USERS = [
     },
 ]
 
+MATAKULIAH = [
+    {"kode": "IF301", "nama": "Pemrograman Mobile",        "sks": 3, "koordinat_lat": -6.200000, "koordinat_lng": 106.816666},
+    {"kode": "IF302", "nama": "Basis Data Lanjut",         "sks": 3, "koordinat_lat": -6.200100, "koordinat_lng": 106.816700},
+    {"kode": "SI201", "nama": "Sistem Informasi Manajemen","sks": 3, "koordinat_lat": -6.200200, "koordinat_lng": 106.816800},
+]
+
 def seed():
     db = SessionLocal()
     try:
-        skipped = 0
-        inserted = 0
+        print("🌱 Seeding database presensi_db...\n")
+
+        # ───────── USERS ─────────
         for data in USERS:
-            # Cek apakah user sudah ada (hindari duplicate)
             existing = db.query(User).filter(User.nim_nidn == data["nim_nidn"]).first()
             if existing:
-                print(f"  ⚠  Skip (sudah ada): {data['nama_lengkap']}")
-                skipped += 1
+                print(f"⚠ Skip user: {data['nama_lengkap']}")
                 continue
 
             user = User(
-                nim_nidn      = data["nim_nidn"],
-                nama_lengkap  = data["nama_lengkap"],
-                email         = data["email"],
-                password_hash = hash_password("password123"),
-                role          = data["role"],
-                program_studi = data["program_studi"],
+                nim_nidn=data["nim_nidn"],
+                nama_lengkap=data["nama_lengkap"],
+                email=data["email"],
+                password_hash=hash_password("password123"),
+                role=data["role"],
+                program_studi=data["program_studi"],
             )
             db.add(user)
-            print(f"  ✓  Insert: {data['nama_lengkap']} ({data['role'].value})")
-            inserted += 1
+            print(f"✓ Insert user: {data['nama_lengkap']}")
+
+        # ───────── MATAKULIAH ─────────
+        for mk in MATAKULIAH:
+            existing = db.query(Matakuliah).filter(Matakuliah.kode == mk["kode"]).first()
+            if existing:
+                print(f"⚠ Skip matakuliah: {mk['nama']}")
+                continue
+
+            db.add(Matakuliah(**mk))
+            print(f"✓ Insert matakuliah: {mk['nama']}")
 
         db.commit()
-        print(f"\n✅ Selesai! {inserted} user ditambahkan, {skipped} dilewati.")
-        print("   Password semua akun: password123")
+        print("\n✅ Seeding selesai!")
 
     except Exception as e:
         db.rollback()
-        print(f"❌ Error: {e}")
+        print("❌ Error:", e)
+
     finally:
         db.close()
 
+
 if __name__ == "__main__":
-    print("🌱 Seeding database presensi_db...\n")
     seed()
