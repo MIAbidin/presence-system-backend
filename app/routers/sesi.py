@@ -183,3 +183,35 @@ def get_peserta(
             "mode_kelas"    : p.mode_kelas.value,
         } for p in presensi_list]
     }
+
+# ─── GET /sesi/aktif-dosen ────────────────────────────────────
+
+@router.get("/aktif-dosen")
+def get_sesi_aktif_dosen(
+     dosen : User = Depends(require_dosen),
+     db    : Session = Depends(get_db)
+):
+     """
+     Ambil semua sesi aktif yang dibuat oleh dosen yang sedang login.
+     Dipakai oleh dashboard dosen saat tidak ada sesi_id yang di-pass.
+     """
+     from app.models.matakuliah import Matakuliah
+     sesi_list = db.query(SesiPresensi).filter(
+         SesiPresensi.dosen_id == dosen.id,
+         SesiPresensi.status   == SesiStatus.aktif
+     ).order_by(SesiPresensi.waktu_buka.desc()).all()
+
+     result = []
+     for sesi in sesi_list:
+         mk = db.query(Matakuliah).filter(Matakuliah.id == sesi.matakuliah_id).first()
+         result.append({
+             "id"          : str(sesi.id),
+             "mode"        : sesi.mode.value,
+             "kode_sesi"   : sesi.kode_sesi,
+             "pertemuan_ke": sesi.pertemuan_ke,
+             "waktu_buka"  : sesi.waktu_buka.isoformat(),
+             "matakuliah"  : mk.nama if mk else "-",
+             "detik_tersisa": sesi_service.hitung_detik_tersisa(sesi),
+         })
+
+     return {"sesi_list": result}
