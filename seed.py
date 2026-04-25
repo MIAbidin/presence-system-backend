@@ -1,19 +1,22 @@
 """
 seed.py — Insert data dummy untuk testing.
 Jalankan: python seed.py
-Data: 1 admin, 2 dosen, 10 mahasiswa
+Data: 1 admin, 2 dosen, 10 mahasiswa, 3 matakuliah, + enrollments
 Password semua akun: password123
 """
+from datetime import time
+
 from app.database.db import SessionLocal, engine
 from app.models.user import User, UserRole, Base
-from app.services.auth_service import hash_password
 from app.models.matakuliah import Matakuliah
+from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+from app.services.auth_service import hash_password
 
 # Pastikan tabel sudah ada
 Base.metadata.create_all(bind=engine)
 
 USERS = [
-    # ── Admin ────────────────────────────────────────────
+    # ── Admin ────────────────────────────────────────────────
     {
         "nim_nidn"     : "ADMIN001",
         "nama_lengkap" : "Administrator Sistem",
@@ -21,7 +24,7 @@ USERS = [
         "role"         : UserRole.admin,
         "program_studi": "Sistem Informasi",
     },
-    # ── Dosen ────────────────────────────────────────────
+    # ── Dosen ────────────────────────────────────────────────
     {
         "nim_nidn"     : "1234567890",
         "nama_lengkap" : "Dr. Budi Santoso, M.Kom",
@@ -36,7 +39,7 @@ USERS = [
         "role"         : UserRole.dosen,
         "program_studi": "Sistem Informasi",
     },
-    # ── Mahasiswa (10 orang) ─────────────────────────────
+    # ── Mahasiswa ────────────────────────────────────────────
     {
         "nim_nidn"     : "2021001001",
         "nama_lengkap" : "Ahmad Fauzi",
@@ -109,51 +112,118 @@ USERS = [
     },
 ]
 
+# Matakuliah lengkap dengan jadwal
 MATAKULIAH = [
-    {"kode": "IF301", "nama": "Pemrograman Mobile",        "sks": 3, "koordinat_lat": -6.200000, "koordinat_lng": 106.816666},
-    {"kode": "IF302", "nama": "Basis Data Lanjut",         "sks": 3, "koordinat_lat": -6.200100, "koordinat_lng": 106.816700},
-    {"kode": "SI201", "nama": "Sistem Informasi Manajemen","sks": 3, "koordinat_lat": -6.200200, "koordinat_lng": 106.816800},
+    {
+        "kode"          : "IF301",
+        "nama"          : "Pemrograman Mobile",
+        "sks"           : 3,
+        "hari"          : "Senin",
+        "jam_mulai"     : time(8, 0),
+        "jam_selesai"   : time(10, 30),
+        "ruangan"       : "Lab A-301",
+        "koordinat_lat" : -6.200000,
+        "koordinat_lng" : 106.816666,
+    },
+    {
+        "kode"          : "IF302",
+        "nama"          : "Basis Data Lanjut",
+        "sks"           : 3,
+        "hari"          : "Rabu",
+        "jam_mulai"     : time(13, 0),
+        "jam_selesai"   : time(15, 30),
+        "ruangan"       : "Ruang B-202",
+        "koordinat_lat" : -6.200100,
+        "koordinat_lng" : 106.816700,
+    },
+    {
+        "kode"          : "SI201",
+        "nama"          : "Sistem Informasi Manajemen",
+        "sks"           : 3,
+        "hari"          : "Jumat",
+        "jam_mulai"     : time(10, 0),
+        "jam_selesai"   : time(12, 30),
+        "ruangan"       : "Ruang C-101",
+        "koordinat_lat" : -6.200200,
+        "koordinat_lng" : 106.816800,
+    },
 ]
+
 
 def seed():
     db = SessionLocal()
     try:
         print("🌱 Seeding database presensi_db...\n")
 
-        # ───────── USERS ─────────
+        # ── USERS ────────────────────────────────────────────
+        created_users = {}
         for data in USERS:
             existing = db.query(User).filter(User.nim_nidn == data["nim_nidn"]).first()
             if existing:
                 print(f"⚠ Skip user: {data['nama_lengkap']}")
+                created_users[data["nim_nidn"]] = existing
                 continue
 
             user = User(
-                nim_nidn=data["nim_nidn"],
-                nama_lengkap=data["nama_lengkap"],
-                email=data["email"],
-                password_hash=hash_password("password123"),
-                role=data["role"],
-                program_studi=data["program_studi"],
+                nim_nidn      = data["nim_nidn"],
+                nama_lengkap  = data["nama_lengkap"],
+                email         = data["email"],
+                password_hash = hash_password("password123"),
+                role          = data["role"],
+                program_studi = data["program_studi"],
             )
             db.add(user)
+            db.flush()   # agar id tersedia sebelum commit
+            created_users[data["nim_nidn"]] = user
             print(f"✓ Insert user: {data['nama_lengkap']}")
 
-        # ───────── MATAKULIAH ─────────
-        for mk in MATAKULIAH:
-            existing = db.query(Matakuliah).filter(Matakuliah.kode == mk["kode"]).first()
+        # ── MATAKULIAH ───────────────────────────────────────
+        created_mk = {}
+        for mk_data in MATAKULIAH:
+            existing = db.query(Matakuliah).filter(Matakuliah.kode == mk_data["kode"]).first()
             if existing:
-                print(f"⚠ Skip matakuliah: {mk['nama']}")
+                print(f"⚠ Skip matakuliah: {mk_data['nama']}")
+                created_mk[mk_data["kode"]] = existing
                 continue
 
-            db.add(Matakuliah(**mk))
-            print(f"✓ Insert matakuliah: {mk['nama']}")
+            mk = Matakuliah(**mk_data)
+            db.add(mk)
+            db.flush()
+            created_mk[mk_data["kode"]] = mk
+            print(f"✓ Insert matakuliah: {mk_data['nama']} ({mk_data['hari']} {mk_data['jam_mulai']})")
+
+        # ── ENROLLMENTS (semua mahasiswa → semua matakuliah) ─
+        mahasiswa_list = [
+            v for k, v in created_users.items()
+            if hasattr(v, 'role') and v.role == UserRole.mahasiswa
+        ]
+
+        for mhs in mahasiswa_list:
+            for mk in created_mk.values():
+                existing_enroll = db.query(MahasiswaMatakuliah).filter(
+                    MahasiswaMatakuliah.mahasiswa_id  == mhs.id,
+                    MahasiswaMatakuliah.matakuliah_id == mk.id,
+                ).first()
+                if existing_enroll:
+                    continue
+                db.add(MahasiswaMatakuliah(
+                    mahasiswa_id  = mhs.id,
+                    matakuliah_id = mk.id,
+                ))
+
+        print(f"✓ Enrolled {len(mahasiswa_list)} mahasiswa ke {len(created_mk)} matakuliah")
 
         db.commit()
         print("\n✅ Seeding selesai!")
+        print("\nAkun test:")
+        print("  Mahasiswa : NIM 2021001001  password: password123")
+        print("  Dosen     : NIDN 1234567890  password: password123")
+        print("  Admin     : ADMIN001  password: password123")
 
     except Exception as e:
         db.rollback()
         print("❌ Error:", e)
+        raise
 
     finally:
         db.close()
