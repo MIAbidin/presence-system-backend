@@ -1,11 +1,9 @@
 # app/services/home_service.py
 """
-Service untuk endpoint beranda mahasiswa:
-- GET /mahasiswa/home-summary
-- GET /jadwal/hari-ini
-- GET /jadwal/mingguan
+Service untuk endpoint beranda mahasiswa.
+VERSI OPTIMIZED — semua data diambil dengan bulk query, bukan N+1 loop.
 """
-from datetime import datetime, date, timezone, timedelta
+from datetime import datetime, date
 from typing import List, Optional
 from uuid import UUID
 
@@ -14,31 +12,21 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.models.matakuliah import Matakuliah
 from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
-from app.models.sesi import SesiPresensi, SesiStatus, SesiMode
+from app.models.sesi import SesiPresensi, SesiStatus
 from app.models.presensi import Presensi, PresensiStatus
 from app.schemas.home import (
     HomeSummaryResponse, StatKehadiran, SesiAktifInfo, JadwalItem
 )
 from app.services.sesi_service import hitung_detik_tersisa
 
-
-# Urutan hari dalam seminggu (Indonesia)
 HARI_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-
-# Mapping weekday() Python → nama hari Indonesia
 WEEKDAY_TO_HARI = {
-    0: "Senin",
-    1: "Selasa",
-    2: "Rabu",
-    3: "Kamis",
-    4: "Jumat",
-    5: "Sabtu",
-    6: "Minggu",
+    0: "Senin", 1: "Selasa", 2: "Rabu", 3: "Kamis",
+    4: "Jumat", 5: "Sabtu", 6: "Minggu",
 }
 
 
 def _format_time(t) -> Optional[str]:
-    """Konversi objek time / string ke format HH:MM."""
     if t is None:
         return None
     if hasattr(t, 'strftime'):
@@ -47,7 +35,6 @@ def _format_time(t) -> Optional[str]:
 
 
 def get_matakuliah_mahasiswa(db: Session, mahasiswa_id: UUID) -> List[Matakuliah]:
-    """Ambil semua matakuliah yang diambil mahasiswa ini."""
     rows = (
         db.query(MahasiswaMatakuliah)
         .filter(MahasiswaMatakuliah.mahasiswa_id == mahasiswa_id)
@@ -59,56 +46,101 @@ def get_matakuliah_mahasiswa(db: Session, mahasiswa_id: UUID) -> List[Matakuliah
     return db.query(Matakuliah).filter(Matakuliah.id.in_(mk_ids)).all()
 
 
+def get_stat_kehadiran(db: Session, mahasiswa_id: UUID) -> StatKehadiran:
+    presensi_list = (
+        db.query(Presensi)
+        .filter(Presensi.mahasiswa_id == mahasiswa_id)
+        .all()
+    )
+    total     = len(presensi_list)
+    hadir     = sum(1 for p in presensi_list if p.status == PresensiStatus.hadir)
+    terlambat = sum(1 for p in presensi_list if p.status == PresensiStatus.terlambat)
+    absen     = sum(1 for p in presensi_list if p.status == PresensiStatus.absen)
+    izin      = sum(1 for p in presensi_list if p.status == PresensiStatus.izin)
+    sakit     = sum(1 for p in presensi_list if p.status == PresensiStatus.sakit)
+    efektif   = hadir + terlambat
+    persen    = round(efektif / total * 100, 1) if total else 0.0
+    return StatKehadiran(
+        total_pertemuan=total, hadir=hadir, terlambat=terlambat,
+        absen=absen, izin=izin, sakit=sakit,
+        hadir_efektif=efektif, persentase=persen,
+    )
+
+
 def get_jadwal_hari_ini(db: Session, mahasiswa_id: UUID) -> List[JadwalItem]:
     """
-    Jadwal matakuliah mahasiswa untuk hari ini,
-    dilengkapi status presensi dan flag sesi aktif.
+    OPTIMIZED: 4 query total, bukan N query per matakuliah.
     """
     hari_ini = WEEKDAY_TO_HARI.get(datetime.now().weekday(), "")
-    matakuliah_list = get_matakuliah_mahasiswa(db, mahasiswa_id)
 
-    result: List[JadwalItem] = []
+    # Query 1: matakuliah mahasiswa hari ini
+    rows = (
+        db.query(MahasiswaMatakuliah)
+        .filter(MahasiswaMatakuliah.mahasiswa_id == mahasiswa_id)
+        .all()
+    )
+    if not rows:
+        return []
 
-    for mk in matakuliah_list:
-        # Filter hanya matakuliah hari ini
-        if mk.hari and mk.hari != hari_ini:
-            continue
+    mk_ids = [r.matakuliah_id for r in rows]
+    matakuliah_list = (
+        db.query(Matakuliah)
+        .filter(Matakuliah.id.in_(mk_ids), Matakuliah.hari == hari_ini)
+        .all()
+    )
+    if not matakuliah_list:
+        return []
 
-        # Cek sesi aktif
-        sesi_aktif = (
-            db.query(SesiPresensi)
-            .filter(
-                SesiPresensi.matakuliah_id == mk.id,
-                SesiPresensi.status == SesiStatus.aktif,
-            )
-            .first()
+    mk_ids_hari_ini = [mk.id for mk in matakuliah_list]
+
+    # Query 2: semua sesi aktif untuk matakuliah hari ini (bulk)
+    sesi_aktif_list = (
+        db.query(SesiPresensi)
+        .filter(
+            SesiPresensi.matakuliah_id.in_(mk_ids_hari_ini),
+            SesiPresensi.status == SesiStatus.aktif,
         )
+        .all()
+    )
+    sesi_aktif_map = {s.matakuliah_id: s for s in sesi_aktif_list}
 
-        # Cek status presensi hari ini untuk sesi ini
+    # Query 3: semua sesi hari ini untuk matakuliah hari ini (bulk)
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    sesi_hari_ini_list = (
+        db.query(SesiPresensi)
+        .filter(
+            SesiPresensi.matakuliah_id.in_(mk_ids_hari_ini),
+            SesiPresensi.waktu_buka >= today_start,
+        )
+        .order_by(SesiPresensi.waktu_buka.desc())
+        .all()
+    )
+    sesi_hari_ini_map: dict = {}
+    for s in sesi_hari_ini_list:
+        if s.matakuliah_id not in sesi_hari_ini_map:
+            sesi_hari_ini_map[s.matakuliah_id] = s
+
+    # Query 4: presensi mahasiswa di sesi-sesi hari ini (bulk)
+    sesi_ids_hari_ini = [s.id for s in sesi_hari_ini_list]
+    presensi_map: dict = {}
+    if sesi_ids_hari_ini:
+        for p in db.query(Presensi).filter(
+            Presensi.mahasiswa_id == mahasiswa_id,
+            Presensi.sesi_id.in_(sesi_ids_hari_ini),
+        ).all():
+            presensi_map[p.sesi_id] = p
+
+    # Susun result — tidak ada query di dalam loop ini
+    result: List[JadwalItem] = []
+    for mk in matakuliah_list:
+        sesi_aktif    = sesi_aktif_map.get(mk.id)
+        sesi_hari_ini = sesi_hari_ini_map.get(mk.id)
+
         status_presensi = None
-        if sesi_aktif or True:  # cek semua sesi hari ini
-            today_start = datetime.combine(date.today(), datetime.min.time())
-            # Cari presensi hari ini untuk matakuliah ini
-            sesi_hari_ini = (
-                db.query(SesiPresensi)
-                .filter(
-                    SesiPresensi.matakuliah_id == mk.id,
-                    SesiPresensi.waktu_buka >= today_start,
-                )
-                .order_by(SesiPresensi.waktu_buka.desc())
-                .first()
-            )
-            if sesi_hari_ini:
-                presensi = (
-                    db.query(Presensi)
-                    .filter(
-                        Presensi.mahasiswa_id == mahasiswa_id,
-                        Presensi.sesi_id == sesi_hari_ini.id,
-                    )
-                    .first()
-                )
-                if presensi:
-                    status_presensi = presensi.status.value
+        if sesi_hari_ini:
+            presensi = presensi_map.get(sesi_hari_ini.id)
+            if presensi:
+                status_presensi = presensi.status.value
 
         result.append(JadwalItem(
             matakuliah_id   = mk.id,
@@ -124,23 +156,18 @@ def get_jadwal_hari_ini(db: Session, mahasiswa_id: UUID) -> List[JadwalItem]:
             sesi_id         = sesi_aktif.id if sesi_aktif else None,
         ))
 
-    # Urutkan berdasarkan jam_mulai
     result.sort(key=lambda x: x.jam_mulai or "99:99")
     return result
 
 
 def get_jadwal_mingguan(db: Session, mahasiswa_id: UUID) -> dict:
-    """
-    Jadwal semua matakuliah mahasiswa, dikelompokkan per hari.
-    """
     matakuliah_list = get_matakuliah_mahasiswa(db, mahasiswa_id)
     grouped: dict = {hari: [] for hari in HARI_ORDER}
 
     for mk in matakuliah_list:
-        hari = mk.hari or "Senin"  # default jika belum diset
+        hari = mk.hari or "Senin"
         if hari not in grouped:
             grouped[hari] = []
-
         grouped[hari].append(JadwalItem(
             matakuliah_id = mk.id,
             kode          = mk.kode,
@@ -152,54 +179,27 @@ def get_jadwal_mingguan(db: Session, mahasiswa_id: UUID) -> dict:
             ruangan       = mk.ruangan,
         ))
 
-    # Urutkan setiap hari berdasarkan jam_mulai
     for hari in grouped:
         grouped[hari].sort(key=lambda x: x.jam_mulai or "99:99")
 
-    # Bersihkan hari yang kosong — kembalikan semua agar frontend bisa render
     return {hari: grouped[hari] for hari in HARI_ORDER}
-
-
-def get_stat_kehadiran(db: Session, mahasiswa_id: UUID) -> StatKehadiran:
-    """Hitung statistik kehadiran mahasiswa untuk seluruh semester."""
-    presensi_list = (
-        db.query(Presensi)
-        .filter(Presensi.mahasiswa_id == mahasiswa_id)
-        .all()
-    )
-
-    total      = len(presensi_list)
-    hadir      = sum(1 for p in presensi_list if p.status == PresensiStatus.hadir)
-    terlambat  = sum(1 for p in presensi_list if p.status == PresensiStatus.terlambat)
-    absen      = sum(1 for p in presensi_list if p.status == PresensiStatus.absen)
-    izin       = sum(1 for p in presensi_list if p.status == PresensiStatus.izin)
-    sakit      = sum(1 for p in presensi_list if p.status == PresensiStatus.sakit)
-    efektif    = hadir + terlambat
-    persentase = round(efektif / total * 100, 1) if total else 0.0
-
-    return StatKehadiran(
-        total_pertemuan = total,
-        hadir           = hadir,
-        terlambat       = terlambat,
-        absen           = absen,
-        izin            = izin,
-        sakit           = sakit,
-        hadir_efektif   = efektif,
-        persentase      = persentase,
-    )
 
 
 def get_sesi_aktif_mahasiswa(db: Session, mahasiswa_id: UUID) -> List[SesiAktifInfo]:
     """
-    Cari semua sesi yang sedang aktif untuk matakuliah yang diambil mahasiswa ini,
-    dan mahasiswa belum presensi di sesi tersebut.
+    OPTIMIZED: 3 query total, bukan loop query per sesi.
     """
-    matakuliah_list = get_matakuliah_mahasiswa(db, mahasiswa_id)
-    if not matakuliah_list:
+    rows = (
+        db.query(MahasiswaMatakuliah)
+        .filter(MahasiswaMatakuliah.mahasiswa_id == mahasiswa_id)
+        .all()
+    )
+    if not rows:
         return []
 
-    mk_ids = [mk.id for mk in matakuliah_list]
+    mk_ids = [r.matakuliah_id for r in rows]
 
+    # Query 1: semua sesi aktif
     sesi_list = (
         db.query(SesiPresensi)
         .filter(
@@ -208,23 +208,30 @@ def get_sesi_aktif_mahasiswa(db: Session, mahasiswa_id: UUID) -> List[SesiAktifI
         )
         .all()
     )
+    if not sesi_list:
+        return []
+
+    # Query 2: presensi yang sudah ada (bulk, tidak loop)
+    sesi_ids = [s.id for s in sesi_list]
+    sudah_presensi_set = set(
+        p.sesi_id for p in db.query(Presensi).filter(
+            Presensi.mahasiswa_id == mahasiswa_id,
+            Presensi.sesi_id.in_(sesi_ids),
+            Presensi.status.in_([PresensiStatus.hadir, PresensiStatus.terlambat]),
+        ).all()
+    )
+
+    # Query 3: info matakuliah (bulk)
+    mk_map = {
+        mk.id: mk for mk in
+        db.query(Matakuliah).filter(Matakuliah.id.in_(mk_ids)).all()
+    }
 
     result: List[SesiAktifInfo] = []
     for sesi in sesi_list:
-        # Lewati jika mahasiswa sudah presensi di sesi ini
-        sudah_presensi = (
-            db.query(Presensi)
-            .filter(
-                Presensi.mahasiswa_id == mahasiswa_id,
-                Presensi.sesi_id == sesi.id,
-                Presensi.status.in_([PresensiStatus.hadir, PresensiStatus.terlambat]),
-            )
-            .first()
-        )
-        if sudah_presensi:
+        if sesi.id in sudah_presensi_set:
             continue
-
-        mk = next((m for m in matakuliah_list if m.id == sesi.matakuliah_id), None)
+        mk = mk_map.get(sesi.matakuliah_id)
         result.append(SesiAktifInfo(
             sesi_id         = sesi.id,
             matakuliah_nama = mk.nama if mk else "-",
@@ -237,20 +244,11 @@ def get_sesi_aktif_mahasiswa(db: Session, mahasiswa_id: UUID) -> List[SesiAktifI
 
 
 def get_home_summary(db: Session, mahasiswa: User) -> HomeSummaryResponse:
-    """
-    Kumpulkan semua data untuk halaman beranda dalam satu fungsi.
-    Dipanggil oleh GET /mahasiswa/home-summary.
-    """
-    # Stat semester
-    stat = get_stat_kehadiran(db, mahasiswa.id)
-
-    # Jadwal hari ini
+    """Total query: ~8 query (vs sebelumnya bisa 20+ query)."""
+    stat            = get_stat_kehadiran(db, mahasiswa.id)
     jadwal_hari_ini = get_jadwal_hari_ini(db, mahasiswa.id)
+    sesi_aktif      = get_sesi_aktif_mahasiswa(db, mahasiswa.id)
 
-    # Sesi aktif
-    sesi_aktif = get_sesi_aktif_mahasiswa(db, mahasiswa.id)
-
-    # Presensi hari ini (jumlah yang sudah dilakukan)
     today_start = datetime.combine(date.today(), datetime.min.time())
     presensi_hari_ini = (
         db.query(Presensi)
