@@ -1,30 +1,220 @@
-# Virtual environment
-venv/
+# ═══════════════════════════════════════════════════════════
+# .gitignore — Presensi Face Recognition App
+# Flutter (mobile) + FastAPI (backend)
+# ═══════════════════════════════════════════════════════════
 
-# Environment variables
+# ──────────────────────────────────────────────────────────
+# 🔐 SECRETS & CREDENTIALS — JANGAN PERNAH DI-COMMIT
+# ──────────────────────────────────────────────────────────
+
+# Firebase credentials (berisi API key & project info)
+google-services.json
+GoogleService-Info.plist
+firebase_options.dart
+
+# Backend environment variables (berisi DB password, secret key)
 .env
 .env.*
+!.env.example          # template boleh di-commit
+
+# FCM service account credentials
+fcm-credentials.json
+*-credentials.json
+*-service-account.json
+serviceAccountKey.json
+
+# SSL/TLS certificates & private keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+
+# Android signing keystore
+*.jks
+*.keystore
+key.properties
+
+# ──────────────────────────────────────────────────────────
+# FLUTTER / DART
+# ──────────────────────────────────────────────────────────
+
+# Dart tool cache
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# Build outputs
+/build/
+/android/app/debug/
+/android/app/profile/
+/android/app/release/
+
+# Generated files (Alembic, build_runner, etc.)
+*.g.dart
+*.freezed.dart
+*.mocks.dart
+
+# Coverage
+/coverage/
+
+# Symbols & obfuscation maps
+app.*.symbols
+app.*.map.json
+
+# ──────────────────────────────────────────────────────────
+# ANDROID
+# ──────────────────────────────────────────────────────────
+/android/gradle-wrapper.jar
+/android/.gradle/
+/android/captures/
+/android/gradlew
+/android/gradlew.bat
+/android/local.properties
+/android/GeneratedPluginRegistrant.java
+/android/.cxx/
+
+# ──────────────────────────────────────────────────────────
+# iOS / macOS
+# ──────────────────────────────────────────────────────────
+**/ios/Flutter/.last_build_id
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/ios/xcuserdata/
+**/ios/DerivedData/
+**/ios/**/*.xcuserstate
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+
+**/macos/Flutter/ephemeral/
+**/macos/Pods/
+**/macos/xcuserdata/
+
+# ──────────────────────────────────────────────────────────
+# PYTHON / FASTAPI BACKEND
+# ──────────────────────────────────────────────────────────
+
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pdb
 
-# Alembic cache
-alembic/__pycache__/
-alembic/versions/__pycache__/
+# Pytest cache & coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# IDE
-.vscode/
-.idea/
+# MyPy cache
+.mypy_cache/
+.dmypy.json
 
-# OS
-.DS_Store
-Thumbs.db
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+.eggs/
 
-# Logs
-*.log
+# Upload temp files (foto wajah sebelum diproses)
+uploads/
+temp_uploads/
+*.tmp
 
-# Docker volume data (opsional)
+# ──────────────────────────────────────────────────────────
+# DATABASE
+# ──────────────────────────────────────────────────────────
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# PostgreSQL data volume (dari Docker)
 pgdata/
+postgres_data/
+
+# Alembic generated — boleh di-commit kecuali yang berisi secrets
+# alembic/versions/  ← JANGAN ignore ini, migration perlu di-commit
+
+# ──────────────────────────────────────────────────────────
+# DOCKER
+# ──────────────────────────────────────────────────────────
+
+# Docker override (berisi env override lokal)
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ──────────────────────────────────────────────────────────
+# IDE & EDITOR
+# ──────────────────────────────────────────────────────────
+
+# VS Code
+.vscode/
+!.vscode/extensions.json    # rekomendasi extension boleh di-commit
+!.vscode/settings.json.example
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.#*
+
+# ──────────────────────────────────────────────────────────
+# OS
+# ──────────────────────────────────────────────────────────
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ──────────────────────────────────────────────────────────
+# LOGS & MONITORING
+# ──────────────────────────────────────────────────────────
+
+*.log
+logs/
+npm-debug.log*
+
+# ──────────────────────────────────────────────────────────
+# MISC
+# ──────────────────────────────────────────────────────────
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Compressed files (hasil export laporan lokal)
+*.zip
+*.tar.gz
+*.rar
