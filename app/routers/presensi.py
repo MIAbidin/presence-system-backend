@@ -224,9 +224,22 @@ def ubah_status(
         raise HTTPException(status_code=400, detail=pesan)
     return {"message": pesan}
 
-# Tambahkan endpoint ini ke app/routers/presensi.py
-# POST /presensi/simple — mahasiswa tidak perlu tahu sesi_id
-# Backend otomatis cari sesi aktif untuk mahasiswa tersebut
+# ─── FIX untuk app/routers/presensi.py ───────────────────────
+# Ganti fungsi lakukan_presensi_simple dengan versi di bawah ini.
+#
+# ROOT CAUSE Bug 2 (matakuliah salah):
+# Kode lama mencari sesi berdasarkan MODE saja:
+#   SesiPresensi.mode == SesiMode("online")
+#
+# Artinya jika ada 2 sesi online aktif (matakuliah A dan B),
+# sistem selalu ambil sesi_list[0] — yaitu matakuliah mana saja
+# yang kebetulan muncul pertama dari query, bukan matakuliah
+# yang kode_sesinya diinput mahasiswa.
+#
+# FIX: Untuk mode online, cari sesi berdasarkan kode_sesi secara langsung
+# (sudah divalidasi sebelumnya), bukan berdasarkan mode + mk_ids.
+# ─────────────────────────────────────────────────────────────
+
 
 @router.post("/simple", response_model=PresensiResponse)
 async def lakukan_presensi_simple(
@@ -239,14 +252,16 @@ async def lakukan_presensi_simple(
 ):
     """
     Endpoint presensi SIMPEL — mahasiswa tidak perlu tahu sesi_id.
-    
+
     Untuk OFFLINE: kirim latitude + longitude saja (tanpa kode_sesi)
     Untuk ONLINE : kirim kode_sesi saja (tanpa lat/lng)
-    
-    Backend otomatis:
-    1. Cari semua sesi aktif untuk matakuliah mahasiswa ini
-    2. Pilih sesi yang sesuai mode
-    3. Jalankan validasi dan catat presensi
+
+    FIX Bug matakuliah salah:
+    - Mode online: sesi dicari LANGSUNG dari kode_sesi yang diinput,
+      bukan dari list matakuliah mahasiswa. Kode sesi sudah unik per sesi,
+      jadi hasilnya pasti matakuliah yang benar.
+    - Mode offline: sesi dicari dari matakuliah mahasiswa yang punya
+      sesi offline aktif, lalu divalidasi GPS.
     """
     from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
     from app.models.sesi import SesiPresensi, SesiStatus, SesiMode
@@ -259,35 +274,88 @@ async def lakukan_presensi_simple(
         raise HTTPException(status_code=400, detail="Ukuran foto maksimal 5MB")
     image_bytes = resize_image(image_bytes)
 
-    # Tentukan mode dari parameter yang dikirim
-    mode = "online" if kode_sesi else "offline"
+    # ── Tentukan sesi yang akan digunakan ────────────────────
 
-    # Cari matakuliah yang diambil mahasiswa ini
-    rows = db.query(MahasiswaMatakuliah).filter(
-        MahasiswaMatakuliah.mahasiswa_id == mahasiswa.id
-    ).all()
-    mk_ids = [r.matakuliah_id for r in rows]
+    if kode_sesi:
+        # ── MODE ONLINE: cari sesi dari kode_sesi secara langsung ──
+        # FIX: JANGAN cari berdasarkan mode + mk_ids karena bisa ambil
+        # sesi dari matakuliah yang berbeda jika ada banyak sesi aktif.
+        # Kode sesi sudah unik per sesi (UNIQUE constraint di DB),
+        # jadi langsung query berdasarkan kode_sesi.
+        from app.services.sesi_service import validasi_kode
 
-    if not mk_ids:
-        raise HTTPException(status_code=400, detail="Anda belum terdaftar di matakuliah manapun")
+        valid, pesan_kode, sesi = validasi_kode(db, kode_sesi, mahasiswa.id)
+        if not valid or sesi is None:
+            raise HTTPException(status_code=400, detail=pesan_kode)
 
-    # Cari sesi aktif yang sesuai mode
-    sesi_list = db.query(SesiPresensi).filter(
-        SesiPresensi.matakuliah_id.in_(mk_ids),
-        SesiPresensi.status == SesiStatus.aktif,
-        SesiPresensi.mode   == SesiMode(mode),
-    ).all()
+        # Pastikan mahasiswa terdaftar di matakuliah ini
+        from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+        enrolled = db.query(MahasiswaMatakuliah).filter(
+            MahasiswaMatakuliah.mahasiswa_id  == mahasiswa.id,
+            MahasiswaMatakuliah.matakuliah_id == sesi.matakuliah_id,
+        ).first()
 
-    if not sesi_list:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Tidak ada sesi {mode} yang aktif saat ini. Minta dosen untuk membuka sesi."
-        )
+        if not enrolled:
+            raise HTTPException(
+                status_code=400,
+                detail="Anda tidak terdaftar di matakuliah yang menggunakan kode sesi ini"
+            )
 
-    # Pakai sesi pertama yang aktif
-    sesi = sesi_list[0]
+    else:
+        # ── MODE OFFLINE: cari dari matakuliah mahasiswa ──────────
+        if latitude is None or longitude is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Latitude dan longitude wajib untuk mode offline"
+            )
 
-    # Jalankan presensi
+        rows = db.query(MahasiswaMatakuliah).filter(
+            MahasiswaMatakuliah.mahasiswa_id == mahasiswa.id
+        ).all()
+        mk_ids = [r.matakuliah_id for r in rows]
+
+        if not mk_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Anda belum terdaftar di matakuliah manapun"
+            )
+
+        sesi_list = db.query(SesiPresensi).filter(
+            SesiPresensi.matakuliah_id.in_(mk_ids),
+            SesiPresensi.status == SesiStatus.aktif,
+            SesiPresensi.mode   == SesiMode.offline,
+        ).all()
+
+        if not sesi_list:
+            raise HTTPException(
+                status_code=400,
+                detail="Tidak ada sesi offline yang aktif saat ini. Minta dosen untuk membuka sesi."
+            )
+
+        # Untuk offline dengan banyak sesi aktif, pilih yang terdekat GPS
+        from app.utils.geo_utils import hitung_jarak_meter
+
+        sesi_terdekat = None
+        jarak_terkecil = float("inf")
+
+        for s in sesi_list:
+            mk = s.matakuliah
+            if mk and mk.koordinat_lat is not None and mk.koordinat_lng is not None:
+                jarak = hitung_jarak_meter(
+                    latitude, longitude,
+                    mk.koordinat_lat, mk.koordinat_lng
+                )
+                if jarak < jarak_terkecil:
+                    jarak_terkecil = jarak
+                    sesi_terdekat  = s
+
+        if sesi_terdekat is None:
+            # Fallback: ambil sesi pertama jika koordinat belum diset
+            sesi = sesi_list[0]
+        else:
+            sesi = sesi_terdekat
+
+    # ── Jalankan presensi ────────────────────────────────────
     success, pesan, presensi = presensi_service.proses_presensi(
         db          = db,
         mahasiswa   = mahasiswa,
