@@ -145,6 +145,41 @@ def cek_sesi_aktif(
         }
     }
 
+# ─── TAMBAHKAN endpoint ini ke app/routers/sesi.py ───────────
+# Letakkan sebelum endpoint GET /{sesi_id}/peserta
+# Import sudah ada semua di file sesi.py
+
+@router.get("/cek-kode")
+def cek_kode_sesi(
+    kode: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Mahasiswa cek apakah kode sesi valid sebelum scan wajah.
+    Tidak butuh matakuliah_id — langsung cari berdasarkan kode.
+    Endpoint: GET /sesi/cek-kode?kode=A7X3K2
+    """
+    valid, pesan, sesi = sesi_service.validasi_kode(
+        db, kode, current_user.id
+    )
+
+    if not valid:
+        raise HTTPException(status_code=400, detail=pesan)
+
+    return {
+        "ada_sesi": True,
+        "pesan"   : "Kode valid",
+        "sesi": {
+            "id"           : str(sesi.id),
+            "mode"         : sesi.mode.value,
+            "matakuliah_id": str(sesi.matakuliah_id),
+            "matakuliah"   : sesi.matakuliah.nama if sesi.matakuliah else "-",
+            "pertemuan_ke" : sesi.pertemuan_ke,
+            "waktu_buka"   : sesi.waktu_buka.isoformat() if sesi.waktu_buka else None,
+            "detik_tersisa": sesi_service.hitung_detik_tersisa(sesi),
+        }
+    }
 
 # ─── GET /sesi/{sesi_id}/peserta ──────────────────────────
 
