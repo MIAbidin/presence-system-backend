@@ -1,5 +1,5 @@
 # app/routers/presensi.py
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -223,3 +223,89 @@ def ubah_status(
     if not success:
         raise HTTPException(status_code=400, detail=pesan)
     return {"message": pesan}
+
+# Tambahkan endpoint ini ke app/routers/presensi.py
+# POST /presensi/simple — mahasiswa tidak perlu tahu sesi_id
+# Backend otomatis cari sesi aktif untuk mahasiswa tersebut
+
+@router.post("/simple", response_model=PresensiResponse)
+async def lakukan_presensi_simple(
+    foto      : UploadFile = File(..., description="Foto wajah JPEG/PNG"),
+    kode_sesi : str        = Form(None,  description="Kode sesi (wajib untuk online)"),
+    latitude  : float      = Form(None,  description="GPS lat (untuk offline)"),
+    longitude : float      = Form(None,  description="GPS lng (untuk offline)"),
+    mahasiswa : User       = Depends(require_mahasiswa),
+    db        : Session    = Depends(get_db)
+):
+    """
+    Endpoint presensi SIMPEL — mahasiswa tidak perlu tahu sesi_id.
+    
+    Untuk OFFLINE: kirim latitude + longitude saja (tanpa kode_sesi)
+    Untuk ONLINE : kirim kode_sesi saja (tanpa lat/lng)
+    
+    Backend otomatis:
+    1. Cari semua sesi aktif untuk matakuliah mahasiswa ini
+    2. Pilih sesi yang sesuai mode
+    3. Jalankan validasi dan catat presensi
+    """
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+    from app.models.sesi import SesiPresensi, SesiStatus, SesiMode
+
+    if foto.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="Format file tidak didukung")
+
+    image_bytes = await foto.read()
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran foto maksimal 5MB")
+    image_bytes = resize_image(image_bytes)
+
+    # Tentukan mode dari parameter yang dikirim
+    mode = "online" if kode_sesi else "offline"
+
+    # Cari matakuliah yang diambil mahasiswa ini
+    rows = db.query(MahasiswaMatakuliah).filter(
+        MahasiswaMatakuliah.mahasiswa_id == mahasiswa.id
+    ).all()
+    mk_ids = [r.matakuliah_id for r in rows]
+
+    if not mk_ids:
+        raise HTTPException(status_code=400, detail="Anda belum terdaftar di matakuliah manapun")
+
+    # Cari sesi aktif yang sesuai mode
+    sesi_list = db.query(SesiPresensi).filter(
+        SesiPresensi.matakuliah_id.in_(mk_ids),
+        SesiPresensi.status == SesiStatus.aktif,
+        SesiPresensi.mode   == SesiMode(mode),
+    ).all()
+
+    if not sesi_list:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tidak ada sesi {mode} yang aktif saat ini. Minta dosen untuk membuka sesi."
+        )
+
+    # Pakai sesi pertama yang aktif
+    sesi = sesi_list[0]
+
+    # Jalankan presensi
+    success, pesan, presensi = presensi_service.proses_presensi(
+        db          = db,
+        mahasiswa   = mahasiswa,
+        sesi_id     = sesi.id,
+        image_bytes = image_bytes,
+        kode_sesi   = kode_sesi,
+        latitude    = latitude,
+        longitude   = longitude,
+    )
+
+    if not success:
+        raise HTTPException(status_code=400, detail=pesan)
+
+    return PresensiResponse(
+        id             = presensi.id,
+        status         = presensi.status.value,
+        waktu_presensi = presensi.waktu_presensi,
+        akurasi_wajah  = presensi.akurasi_wajah,
+        mode_kelas     = presensi.mode_kelas.value,
+        pesan          = pesan,
+    )

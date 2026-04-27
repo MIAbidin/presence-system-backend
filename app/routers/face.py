@@ -137,3 +137,15 @@ def reset_face(
     current_user.is_face_registered = False
     db.commit()
     return {"message": "Data wajah berhasil dihapus, silakan daftar ulang"}
+
+
+@router.post("/diagnose")
+async def diagnose_face_endpoint(
+    foto: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    from app.services.face_service import diagnose_face
+    image_bytes = await foto.read()
+    image_bytes = resize_image(image_bytes)
+    return diagnose_face(db, current_user.id, image_bytes)

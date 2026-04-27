@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -87,12 +87,13 @@ def proses_presensi(
         return False, pesan, None
 
     # 6. Tentukan status waktu
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
-    if not sesi.waktu_buka or not sesi.batas_terlambat:
-        return False, "Waktu sesi belum lengkap", None
+    waktu_buka = sesi.waktu_buka
+    if waktu_buka.tzinfo is None:
+        waktu_buka = waktu_buka.replace(tzinfo=timezone.utc)
 
-    batas_terlambat = sesi.waktu_buka + sesi.batas_terlambat
+    batas_terlambat = waktu_buka + sesi.batas_terlambat
 
     status = (
         PresensiStatus.terlambat
