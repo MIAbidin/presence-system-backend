@@ -1,6 +1,7 @@
 import uuid
-from sqlalchemy import Column, String, Integer, Float, DateTime, Time
+from sqlalchemy import Column, String, Integer, Float, DateTime, Time, Boolean
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database.db import Base
 
@@ -23,4 +24,19 @@ class Matakuliah(Base):
     koordinat_lat = Column(Float,       nullable=True)
     koordinat_lng = Column(Float,       nullable=True)
 
+    # ── BARU (Fase 1) ──────────────────────────────────────
+    # Toggle: apakah mahasiswa dari kelas/matakuliah lain boleh
+    # presensi di sesi ini TANPA perlu diizinkan manual oleh dosen.
+    # TRUE  → siapapun yang punya wajah terdaftar bisa presensi
+    # FALSE → hanya yang ada di daftar mahasiswa kelas ini (+ tamu manual)
+    izin_tamu     = Column(Boolean, default=False, nullable=False)
+
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relasi ke jadwal pengganti (baru di Fase 1)
+    jadwal_pengganti = relationship(
+        "JadwalPengganti",
+        back_populates="matakuliah",
+        cascade="all, delete",
+        order_by="JadwalPengganti.pertemuan_ke",
+    )
