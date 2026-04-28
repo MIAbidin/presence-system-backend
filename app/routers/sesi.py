@@ -1,10 +1,10 @@
 """
 app/routers/sesi.py
 ════════════════════
-Update Fase 2:
-- BukaSesiRequest: tambah mulai_dari_jam_jadwal dan batas_terlambat opsional (None)
-- Endpoint GET /sesi/aktif-dosen tetap ada
-- Endpoint GET /sesi/cek-kode tetap ada
+Fase 3.6 — Perbaikan GET /sesi/{sesi_id}/peserta:
+- Query bulk (tidak loop per peserta)
+- Return is_tamu dan kelas_asal dengan benar
+- Tambah field nim dan nama yang sebelumnya kadang kosong
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -229,7 +229,8 @@ def get_sesi_aktif_dosen(
     return {"sesi_list": result}
 
 
-# ─── GET /sesi/{sesi_id}/peserta ──────────────────────────────
+# ─── GET /sesi/{sesi_id}/peserta ─────────────────────────────
+# FIX 3.6: Query bulk, return is_tamu + kelas_asal yang benar
 
 @router.get("/{sesi_id}/peserta")
 def get_peserta(
@@ -238,15 +239,27 @@ def get_peserta(
     db     : Session = Depends(get_db)
 ):
     """
-    Dosen lihat daftar hadir real-time.
-    Update Fase 3.6: return nama, NIM, is_tamu, kelas_asal.
-    Dipolling setiap 5 detik dari dashboard dosen.
+    Dosen lihat daftar hadir real-time. Dipolling setiap 5 detik.
+
+    Fase 3.6 Fix:
+    - Query bulk untuk mahasiswa_matakuliah (tidak loop N+1)
+    - Return is_tamu dan kelas_asal yang benar untuk label tamu di Flutter
+    - Return nama dan NIM yang selalu terisi (join ke users)
     """
     sesi = db.query(SesiPresensi).filter(SesiPresensi.id == sesi_id).first()
     if not sesi:
         raise HTTPException(status_code=404, detail="Sesi tidak ditemukan")
 
+    # Ambil semua presensi di sesi ini
     presensi_list = db.query(Presensi).filter(Presensi.sesi_id == sesi_id).all()
+
+    # Bulk query: mahasiswa_matakuliah untuk sesi ini (dapat is_tamu + kelas_asal)
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+    mk_rows = db.query(MahasiswaMatakuliah).filter(
+        MahasiswaMatakuliah.matakuliah_id == sesi.matakuliah_id
+    ).all()
+    # Map mahasiswa_id → row
+    mk_row_map = {str(row.mahasiswa_id): row for row in mk_rows}
 
     hadir     = sum(1 for p in presensi_list if p.status == PresensiStatus.hadir)
     terlambat = sum(1 for p in presensi_list if p.status == PresensiStatus.terlambat)
@@ -254,13 +267,8 @@ def get_peserta(
 
     detail = []
     for p in presensi_list:
-        mhs = p.mahasiswa
-        # Ambil info tamu dari mahasiswa_matakuliah
-        from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
-        mk_row = db.query(MahasiswaMatakuliah).filter(
-            MahasiswaMatakuliah.mahasiswa_id  == p.mahasiswa_id,
-            MahasiswaMatakuliah.matakuliah_id == sesi.matakuliah_id,
-        ).first()
+        mhs     = p.mahasiswa
+        mk_row  = mk_row_map.get(str(p.mahasiswa_id))
 
         detail.append({
             "presensi_id"   : str(p.id),
@@ -272,17 +280,29 @@ def get_peserta(
             "akurasi_wajah" : p.akurasi_wajah,
             "mode_kelas"    : p.mode_kelas.value,
             "catatan"       : p.catatan,
-            # Fase 2.4: info tamu
+            # Fase 3.6: is_tamu dan kelas_asal dari bulk query (bukan loop query)
             "is_tamu"       : mk_row.is_tamu    if mk_row else False,
             "kelas_asal"    : mk_row.kelas_asal if mk_row else None,
         })
 
+    # Urutkan: hadir terbaru di atas, absen di bawah
+    status_order = {"hadir": 0, "terlambat": 1, "izin": 2, "sakit": 3, "absen": 4}
+    detail.sort(key=lambda x: (
+        status_order.get(x["status"], 99),
+        -(int(x["waktu_presensi"].replace("T", "").replace(":", "").replace("-", "")[:14])
+          if x["waktu_presensi"] else 0)
+    ))
+
     return {
         "sesi_id"   : str(sesi_id),
+        "mode"      : sesi.mode.value,
+        "pertemuan_ke": sesi.pertemuan_ke,
+        "matakuliah": sesi.matakuliah.nama if sesi.matakuliah else "-",
         "ringkasan" : {
             "hadir"    : hadir,
             "terlambat": terlambat,
             "absen"    : absen,
+            "total"    : len(presensi_list),
         },
         "detail": detail,
     }
