@@ -5,6 +5,11 @@ Fase 3.6 — Perbaikan GET /sesi/{sesi_id}/peserta:
 - Query bulk (tidak loop per peserta)
 - Return is_tamu dan kelas_asal dengan benar
 - Tambah field nim dan nama yang sebelumnya kadang kosong
+
+Tambahan: GET /sesi/riwayat-dosen
+- List semua sesi yang pernah dibuat dosen
+- Dengan ringkasan statistik kehadiran per sesi
+- Dipakai oleh tab Rekap di MainDosenScreen (RekapListScreen)
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -142,6 +147,99 @@ def regen_kode(
         detik_tersisa=detik,
         batas_terlambat_menit=None,
     )
+
+
+# ─── GET /sesi/riwayat-dosen ──────────────────────────────────
+# BARU: Dipakai oleh RekapListScreen (tab Rekap) di Flutter
+
+@router.get("/riwayat-dosen")
+def get_riwayat_sesi_dosen(
+    dosen: User    = Depends(require_dosen),
+    db   : Session = Depends(get_db),
+    limit: int     = 50,
+    skip : int     = 0,
+):
+    """
+    Ambil semua riwayat sesi yang pernah dibuat dosen yang sedang login.
+    Diurutkan dari yang terbaru.
+
+    Dipakai oleh tab Rekap di MainDosenScreen (RekapListScreen).
+
+    Query param opsional:
+    - limit: jumlah item per halaman (default 50)
+    - skip : offset untuk pagination (default 0)
+
+    Response per item:
+    - sesi_id, mode, pertemuan_ke, matakuliah, kode_mk, status
+    - waktu_buka, waktu_tutup
+    - Statistik ringkas: total_mhs, hadir, terlambat, absen, izin, sakit, persentase
+    """
+    from collections import defaultdict
+
+    # Ambil semua sesi dosen, urutkan terbaru dulu
+    sesi_list = (
+        db.query(SesiPresensi)
+        .filter(SesiPresensi.dosen_id == dosen.id)
+        .order_by(SesiPresensi.waktu_buka.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    if not sesi_list:
+        return {"total": 0, "sesi_list": []}
+
+    # Bulk query presensi untuk semua sesi sekaligus (hindari N+1 query)
+    sesi_ids = [s.id for s in sesi_list]
+    all_presensi = (
+        db.query(Presensi)
+        .filter(Presensi.sesi_id.in_(sesi_ids))
+        .all()
+    )
+
+    # Group presensi by sesi_id untuk lookup O(1)
+    presensi_by_sesi: dict = defaultdict(list)
+    for p in all_presensi:
+        presensi_by_sesi[p.sesi_id].append(p)
+
+    result = []
+    for sesi in sesi_list:
+        mk            = sesi.matakuliah
+        presensi_sesi = presensi_by_sesi.get(sesi.id, [])
+
+        # Hitung statistik dari data yang sudah di-cache (no extra query)
+        total     = len(presensi_sesi)
+        hadir     = sum(1 for p in presensi_sesi if p.status == PresensiStatus.hadir)
+        terlambat = sum(1 for p in presensi_sesi if p.status == PresensiStatus.terlambat)
+        absen     = sum(1 for p in presensi_sesi if p.status == PresensiStatus.absen)
+        izin      = sum(1 for p in presensi_sesi if p.status == PresensiStatus.izin)
+        sakit     = sum(1 for p in presensi_sesi if p.status == PresensiStatus.sakit)
+        efektif   = hadir + terlambat
+        persentase = round(efektif / total * 100, 1) if total else 0.0
+
+        result.append({
+            "sesi_id"     : str(sesi.id),
+            "mode"        : sesi.mode.value,
+            "pertemuan_ke": sesi.pertemuan_ke,
+            "matakuliah"  : mk.nama if mk else "-",
+            "kode_mk"     : mk.kode if mk else "-",
+            "status"      : sesi.status.value,
+            "waktu_buka"  : sesi.waktu_buka.isoformat()  if sesi.waktu_buka  else None,
+            "waktu_tutup" : sesi.waktu_tutup.isoformat() if sesi.waktu_tutup else None,
+            # Statistik ringkas
+            "total_mhs"   : total,
+            "hadir"       : hadir,
+            "terlambat"   : terlambat,
+            "absen"       : absen,
+            "izin"        : izin,
+            "sakit"       : sakit,
+            "persentase"  : persentase,
+        })
+
+    return {
+        "total"    : len(result),
+        "sesi_list": result,
+    }
 
 
 # ─── GET /sesi/cek-kode ───────────────────────────────────────
