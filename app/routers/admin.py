@@ -3,16 +3,23 @@ app/routers/admin.py
 ═════════════════════
 Fase 3 — GET /admin/dashboard
 Fase 4 — Manajemen Users (mahasiswa & dosen)
+Fase 6 — Manajemen Matakuliah + toggle izin_tamu
 
 Endpoints:
   GET    /admin/dashboard
   GET    /admin/users
   POST   /admin/users
   PUT    /admin/users/{user_id}
-  DELETE /admin/users/{user_id}          (soft delete)
+  DELETE /admin/users/{user_id}
   POST   /admin/users/{user_id}/reset-face
   POST   /admin/users/{user_id}/reset-password
   POST   /admin/users/{user_id}/face-diagnose
+
+  GET    /admin/matakuliah
+  POST   /admin/matakuliah
+  PUT    /admin/matakuliah/{mk_id}
+  DELETE /admin/matakuliah/{mk_id}
+  PATCH  /admin/matakuliah/{mk_id}/izin-tamu
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -24,7 +31,7 @@ from app.models.user import User, UserRole
 from app.routers.auth import get_current_user
 from app.services import admin_service
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -37,7 +44,7 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-# ── Request schemas ───────────────────────────────────────────
+# ── Request schemas — Users ───────────────────────────────────
 
 class CreateUserRequest(BaseModel):
     nim_nidn      : str
@@ -59,9 +66,9 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    nama_lengkap  : Optional[str] = None
-    email         : Optional[str] = None
-    program_studi : Optional[str] = None
+    nama_lengkap  : Optional[str]  = None
+    email         : Optional[str]  = None
+    program_studi : Optional[str]  = None
     is_active     : Optional[bool] = None
 
 
@@ -70,6 +77,58 @@ class ResetPasswordRequest(BaseModel):
 
     class Config:
         json_schema_extra = {"example": {"password_baru": "NewPassword123!"}}
+
+
+# ── Request schemas — Matakuliah ──────────────────────────────
+
+HARI_VALID = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+
+
+class CreateMatakuliahRequest(BaseModel):
+    kode          : str             = Field(..., min_length=2, max_length=20)
+    nama          : str             = Field(..., min_length=3, max_length=100)
+    sks           : int             = Field(..., ge=1, le=8)
+    hari          : Optional[str]   = Field(None, description="Senin|Selasa|Rabu|Kamis|Jumat|Sabtu|Minggu")
+    jam_mulai     : Optional[str]   = Field(None, description="Format HH:MM, contoh: 08:00")
+    jam_selesai   : Optional[str]   = Field(None, description="Format HH:MM, contoh: 10:30")
+    ruangan       : Optional[str]   = Field(None, max_length=50)
+    koordinat_lat : Optional[float] = None
+    koordinat_lng : Optional[float] = None
+    izin_tamu     : Optional[bool]  = False
+
+    class Config:
+        json_schema_extra = {"example": {
+            "kode"         : "IF301",
+            "nama"         : "Pemrograman Mobile",
+            "sks"          : 3,
+            "hari"         : "Senin",
+            "jam_mulai"    : "08:00",
+            "jam_selesai"  : "10:30",
+            "ruangan"      : "Lab Komputer A-301",
+            "koordinat_lat": -5.130245,
+            "koordinat_lng": 119.489432,
+            "izin_tamu"    : False,
+        }}
+
+
+class UpdateMatakuliahRequest(BaseModel):
+    kode          : Optional[str]   = Field(None, min_length=2, max_length=20)
+    nama          : Optional[str]   = Field(None, min_length=3, max_length=100)
+    sks           : Optional[int]   = Field(None, ge=1, le=8)
+    hari          : Optional[str]   = None
+    jam_mulai     : Optional[str]   = None
+    jam_selesai   : Optional[str]   = None
+    ruangan       : Optional[str]   = Field(None, max_length=50)
+    koordinat_lat : Optional[float] = None
+    koordinat_lng : Optional[float] = None
+    izin_tamu     : Optional[bool]  = None
+
+
+class IzinTamuRequest(BaseModel):
+    izin_tamu: bool
+
+    class Config:
+        json_schema_extra = {"example": {"izin_tamu": True}}
 
 
 # ─── GET /admin/dashboard ─────────────────────────────────────
@@ -94,11 +153,6 @@ def list_users(
     admin   : User          = Depends(require_admin),
     db      : Session       = Depends(get_db),
 ):
-    """
-    List semua user dengan pagination dan filter.
-    Filter role: mahasiswa | dosen | admin
-    Filter search: NIM/NIDN, nama, atau email (case-insensitive)
-    """
     return admin_service.list_users(db, role=role, search=search, page=page, limit=limit)
 
 
@@ -110,7 +164,6 @@ def create_user(
     admin: User    = Depends(require_admin),
     db   : Session = Depends(get_db),
 ):
-    """Buat akun user baru (mahasiswa atau dosen)."""
     success, pesan, user = admin_service.create_user(db, req)
     if not success:
         raise HTTPException(status_code=400, detail=pesan)
@@ -126,7 +179,6 @@ def update_user(
     admin  : User    = Depends(require_admin),
     db     : Session = Depends(get_db),
 ):
-    """Update data user (nama, email, program studi, status aktif)."""
     success, pesan, user = admin_service.update_user(db, user_id, req)
     if not success:
         raise HTTPException(status_code=404, detail=pesan)
@@ -141,7 +193,6 @@ def delete_user(
     admin  : User    = Depends(require_admin),
     db     : Session = Depends(get_db),
 ):
-    """Soft delete — set is_active = False."""
     success, pesan = admin_service.soft_delete_user(db, user_id)
     if not success:
         raise HTTPException(status_code=404, detail=pesan)
@@ -156,7 +207,6 @@ def reset_face(
     admin  : User    = Depends(require_admin),
     db     : Session = Depends(get_db),
 ):
-    """Hapus semua data wajah + set is_face_registered = False."""
     success, pesan = admin_service.reset_face(db, user_id)
     if not success:
         raise HTTPException(status_code=404, detail=pesan)
@@ -172,7 +222,6 @@ def reset_password(
     admin  : User    = Depends(require_admin),
     db     : Session = Depends(get_db),
 ):
-    """Admin reset password user tanpa perlu password lama."""
     success, pesan = admin_service.reset_password(db, user_id, req.password_baru)
     if not success:
         raise HTTPException(status_code=404, detail=pesan)
@@ -187,15 +236,105 @@ def face_diagnose(
     admin  : User    = Depends(require_admin),
     db     : Session = Depends(get_db),
 ):
-    """
-    Diagnosa akurasi face recognition mahasiswa tertentu.
-    Return semua jarak Euclidean ke setiap embedding tersimpan.
-    Berguna untuk debug kasus mahasiswa gagal presensi.
-
-    Note: endpoint ini tidak butuh foto — hanya menganalisis
-    embedding yang sudah tersimpan di DB dan memberikan statistik.
-    """
     result = admin_service.get_face_diagnose_info(db, user_id)
     if result is None:
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
     return result
+
+
+# ════════════════════════════════════════════════════════════
+# FASE 6 — MATAKULIAH ENDPOINTS
+# ════════════════════════════════════════════════════════════
+
+# ─── GET /admin/matakuliah ────────────────────────────────────
+
+@router.get("/matakuliah")
+def list_matakuliah(
+    search : Optional[str] = Query(None, description="Cari kode, nama, atau ruangan"),
+    page   : int           = Query(1,    ge=1),
+    limit  : int           = Query(20,   ge=1, le=100),
+    admin  : User          = Depends(require_admin),
+    db     : Session       = Depends(get_db),
+):
+    """
+    List semua matakuliah dengan pagination dan pencarian.
+    Search: kode, nama, atau ruangan (case-insensitive).
+    """
+    return admin_service.list_matakuliah(db, search=search, page=page, limit=limit)
+
+
+# ─── POST /admin/matakuliah ───────────────────────────────────
+
+@router.post("/matakuliah", status_code=201)
+def create_matakuliah(
+    req  : CreateMatakuliahRequest,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    """Buat matakuliah baru."""
+    if req.hari and req.hari not in HARI_VALID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hari tidak valid. Pilih dari: {', '.join(HARI_VALID)}"
+        )
+    success, pesan, mk = admin_service.create_matakuliah(db, req)
+    if not success:
+        raise HTTPException(status_code=400, detail=pesan)
+    return {"message": pesan, "matakuliah": mk}
+
+
+# ─── PUT /admin/matakuliah/{mk_id} ────────────────────────────
+
+@router.put("/matakuliah/{mk_id}")
+def update_matakuliah(
+    mk_id: UUID,
+    req  : UpdateMatakuliahRequest,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    """Update data matakuliah (semua field opsional)."""
+    if req.hari and req.hari not in HARI_VALID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hari tidak valid. Pilih dari: {', '.join(HARI_VALID)}"
+        )
+    success, pesan, mk = admin_service.update_matakuliah(db, mk_id, req)
+    if not success:
+        raise HTTPException(status_code=404, detail=pesan)
+    return {"message": pesan, "matakuliah": mk}
+
+
+# ─── DELETE /admin/matakuliah/{mk_id} ─────────────────────────
+
+@router.delete("/matakuliah/{mk_id}")
+def delete_matakuliah(
+    mk_id: UUID,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    """Hapus matakuliah permanen (termasuk semua data terkait via cascade)."""
+    success, pesan = admin_service.delete_matakuliah(db, mk_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=pesan)
+    return {"message": pesan}
+
+
+# ─── PATCH /admin/matakuliah/{mk_id}/izin-tamu ────────────────
+
+@router.patch("/matakuliah/{mk_id}/izin-tamu")
+def toggle_izin_tamu(
+    mk_id: UUID,
+    req  : IzinTamuRequest,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    """
+    Toggle izin tamu per matakuliah langsung dari tabel.
+
+    izin_tamu = true  → Mahasiswa dari kelas lain boleh presensi otomatis.
+    izin_tamu = false → Hanya mahasiswa terdaftar yang bisa presensi.
+    """
+    success, pesan, mk = admin_service.toggle_izin_tamu_admin(db, mk_id, req.izin_tamu)
+    if not success:
+        raise HTTPException(status_code=404, detail=pesan)
+    return {"message": pesan, "matakuliah": mk}

@@ -3,6 +3,7 @@ app/services/admin_service.py
 ══════════════════════════════
 Fase 3 — Statistik dashboard
 Fase 4 — CRUD user (mahasiswa & dosen), reset wajah, reset password, face diagnose
+Fase 6 — CRUD matakuliah + toggle izin_tamu
 """
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple
@@ -211,15 +212,13 @@ def list_users(
     """
     query = db.query(User)
 
-    # Filter role
     if role:
         try:
             role_enum = UserRole(role)
             query = query.filter(User.role == role_enum)
         except ValueError:
-            pass  # role tidak valid, abaikan filter
+            pass
 
-    # Filter search (NIM/NIDN, nama, email)
     if search:
         term = f"%{search.lower()}%"
         query = query.filter(or_(
@@ -237,7 +236,6 @@ def list_users(
         .all()
     )
 
-    # Bulk count foto wajah (agar tidak N+1 query)
     user_ids = [u.id for u in users]
     foto_counts: Dict = {}
     if user_ids:
@@ -259,23 +257,16 @@ def list_users(
 
 
 def create_user(db: Session, req) -> Tuple[bool, str, Optional[Dict]]:
-    """
-    Buat akun user baru.
-    req harus punya: nim_nidn, nama_lengkap, email, password, role, program_studi
-    """
     from app.services.auth_service import hash_password
 
-    # Validasi role
     try:
         role_enum = UserRole(req.role)
     except ValueError:
         return False, f"Role tidak valid: {req.role}", None
 
-    # Cek NIM/NIDN sudah ada
     if db.query(User).filter(User.nim_nidn == req.nim_nidn).first():
         return False, f"NIM/NIDN {req.nim_nidn} sudah terdaftar", None
 
-    # Cek email sudah ada
     if db.query(User).filter(User.email == req.email).first():
         return False, f"Email {req.email} sudah terdaftar", None
 
@@ -296,7 +287,6 @@ def create_user(db: Session, req) -> Tuple[bool, str, Optional[Dict]]:
 
 
 def update_user(db: Session, user_id: UUID, req) -> Tuple[bool, str, Optional[Dict]]:
-    """Update data user. Hanya field yang diisi (tidak None) yang diubah."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return False, "User tidak ditemukan", None
@@ -304,7 +294,6 @@ def update_user(db: Session, user_id: UUID, req) -> Tuple[bool, str, Optional[Di
     if req.nama_lengkap is not None:
         user.nama_lengkap = req.nama_lengkap.strip()
     if req.email is not None:
-        # Cek email tidak duplikat dengan user lain
         existing = db.query(User).filter(
             User.email == req.email.strip().lower(),
             User.id    != user_id
@@ -323,7 +312,6 @@ def update_user(db: Session, user_id: UUID, req) -> Tuple[bool, str, Optional[Di
 
 
 def soft_delete_user(db: Session, user_id: UUID) -> Tuple[bool, str]:
-    """Soft delete — set is_active = False, tidak hapus data."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return False, "User tidak ditemukan"
@@ -334,7 +322,6 @@ def soft_delete_user(db: Session, user_id: UUID) -> Tuple[bool, str]:
 
 
 def reset_face(db: Session, user_id: UUID) -> Tuple[bool, str]:
-    """Hapus semua face_embeddings dan reset flag is_face_registered."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return False, "User tidak ditemukan"
@@ -350,7 +337,6 @@ def reset_face(db: Session, user_id: UUID) -> Tuple[bool, str]:
 
 
 def reset_password(db: Session, user_id: UUID, password_baru: str) -> Tuple[bool, str]:
-    """Admin reset password tanpa perlu password lama."""
     from app.services.auth_service import hash_password
 
     user = db.query(User).filter(User.id == user_id).first()
@@ -366,11 +352,6 @@ def reset_password(db: Session, user_id: UUID, password_baru: str) -> Tuple[bool
 
 
 def get_face_diagnose_info(db: Session, user_id: UUID) -> Optional[Dict]:
-    """
-    Informasi diagnostik face recognition untuk mahasiswa tertentu.
-    Tidak butuh foto baru — hanya menganalisis embedding tersimpan
-    dan memberikan statistik kualitas.
-    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return None
@@ -392,7 +373,7 @@ def get_face_diagnose_info(db: Session, user_id: UUID) -> Optional[Dict]:
             "status"           : "Belum ada data wajah terdaftar",
             "embeddings"       : [],
             "threshold_aktif"  : 0.9,
-            "rekomendasi"      : "Mahasiswa perlu melakukan registrasi wajah minimal 8 foto",
+            "rekomendasi"      : ["Mahasiswa perlu melakukan registrasi wajah minimal 8 foto"],
         }
 
     import numpy as np
@@ -406,7 +387,6 @@ def get_face_diagnose_info(db: Session, user_id: UUID) -> Optional[Dict]:
         na, nb = l2_norm(a), l2_norm(b)
         return float(np.sqrt(np.sum((na - nb) ** 2)))
 
-    # Hitung jarak antar semua pasang embedding (konsistensi internal)
     emb_vectors = [e.embedding for e in embeddings]
     pairwise_distances = []
     for i in range(len(emb_vectors)):
@@ -417,7 +397,6 @@ def get_face_diagnose_info(db: Session, user_id: UUID) -> Optional[Dict]:
     avg_internal = round(float(np.mean(pairwise_distances)), 4) if pairwise_distances else 0.0
     max_internal = round(float(np.max(pairwise_distances)), 4)  if pairwise_distances else 0.0
 
-    # Kualitas konsistensi
     if avg_internal < 0.6:
         konsistensi = "Sangat Baik"
         konsistensi_color = "green"
@@ -469,3 +448,191 @@ def get_face_diagnose_info(db: Session, user_id: UUID) -> Optional[Dict]:
         ],
         "rekomendasi": rekomendasi,
     }
+
+
+# ════════════════════════════════════════════════════════════
+# FASE 6 — MATAKULIAH MANAGEMENT
+# ════════════════════════════════════════════════════════════
+
+def _mk_to_dict(mk: Matakuliah, total_mahasiswa: int = 0) -> Dict:
+    """Serialize Matakuliah model ke dict."""
+    def fmt_time(t):
+        if t is None:
+            return None
+        if hasattr(t, 'strftime'):
+            return t.strftime("%H:%M")
+        return str(t)[:5]
+
+    return {
+        "id"             : str(mk.id),
+        "kode"           : mk.kode,
+        "nama"           : mk.nama,
+        "sks"            : mk.sks,
+        "hari"           : mk.hari,
+        "jam_mulai"      : fmt_time(mk.jam_mulai),
+        "jam_selesai"    : fmt_time(mk.jam_selesai),
+        "ruangan"        : mk.ruangan,
+        "koordinat_lat"  : mk.koordinat_lat,
+        "koordinat_lng"  : mk.koordinat_lng,
+        "izin_tamu"      : mk.izin_tamu,
+        "total_mahasiswa": total_mahasiswa,
+        "created_at"     : mk.created_at.isoformat() if mk.created_at else None,
+    }
+
+
+def list_matakuliah(
+    db    : Session,
+    search: Optional[str] = None,
+    page  : int = 1,
+    limit : int = 20,
+) -> Dict:
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+
+    query = db.query(Matakuliah)
+    if search:
+        term = f"%{search.lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(Matakuliah.kode).like(term),
+                func.lower(Matakuliah.nama).like(term),
+                func.lower(Matakuliah.ruangan).like(term),
+            )
+        )
+
+    total   = query.count()
+    mk_list = (
+        query
+        .order_by(Matakuliah.kode)
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    # Bulk count mahasiswa enrolled per matakuliah
+    mk_ids = [mk.id for mk in mk_list]
+    count_rows = (
+        db.query(
+            MahasiswaMatakuliah.matakuliah_id,
+            func.count(MahasiswaMatakuliah.id).label("cnt")
+        )
+        .filter(MahasiswaMatakuliah.matakuliah_id.in_(mk_ids))
+        .group_by(MahasiswaMatakuliah.matakuliah_id)
+        .all()
+    ) if mk_ids else []
+    count_map = {str(r.matakuliah_id): r.cnt for r in count_rows}
+
+    return {
+        "items"      : [_mk_to_dict(mk, count_map.get(str(mk.id), 0)) for mk in mk_list],
+        "total"      : total,
+        "page"       : page,
+        "limit"      : limit,
+        "total_pages": max(1, (total + limit - 1) // limit),
+    }
+
+
+def create_matakuliah(db: Session, req) -> Tuple[bool, str, Optional[Dict]]:
+    from datetime import time as dtime
+
+    # Cek kode duplikat
+    kode_baru = req.kode.strip().upper()
+    if db.query(Matakuliah).filter(Matakuliah.kode == kode_baru).first():
+        return False, f"Kode matakuliah '{kode_baru}' sudah digunakan", None
+
+    def parse_time(s: Optional[str]) -> Optional[dtime]:
+        if not s:
+            return None
+        try:
+            h, m = s.split(":")
+            return dtime(int(h), int(m))
+        except Exception:
+            return None
+
+    mk = Matakuliah(
+        kode          = kode_baru,
+        nama          = req.nama.strip(),
+        sks           = req.sks,
+        hari          = req.hari or None,
+        jam_mulai     = parse_time(req.jam_mulai),
+        jam_selesai   = parse_time(req.jam_selesai),
+        ruangan       = req.ruangan or None,
+        koordinat_lat = req.koordinat_lat,
+        koordinat_lng = req.koordinat_lng,
+        izin_tamu     = req.izin_tamu if req.izin_tamu is not None else False,
+    )
+    db.add(mk)
+    db.commit()
+    db.refresh(mk)
+    return True, f"Matakuliah {mk.nama} berhasil dibuat", _mk_to_dict(mk)
+
+
+def update_matakuliah(
+    db   : Session,
+    mk_id: UUID,
+    req,
+) -> Tuple[bool, str, Optional[Dict]]:
+    from datetime import time as dtime
+
+    mk = db.query(Matakuliah).filter(Matakuliah.id == mk_id).first()
+    if not mk:
+        return False, "Matakuliah tidak ditemukan", None
+
+    def parse_time(s: Optional[str]) -> Optional[dtime]:
+        if s is None or s == "":
+            return None
+        try:
+            h, m = s.split(":")
+            return dtime(int(h), int(m))
+        except Exception:
+            return None
+
+    if req.kode is not None:
+        kode_baru = req.kode.strip().upper()
+        if kode_baru != mk.kode:
+            existing = db.query(Matakuliah).filter(
+                Matakuliah.kode == kode_baru,
+                Matakuliah.id   != mk_id,
+            ).first()
+            if existing:
+                return False, f"Kode '{kode_baru}' sudah digunakan matakuliah lain", None
+        mk.kode = kode_baru
+
+    if req.nama          is not None: mk.nama          = req.nama.strip()
+    if req.sks           is not None: mk.sks           = req.sks
+    if req.hari          is not None: mk.hari          = req.hari or None
+    if req.jam_mulai     is not None: mk.jam_mulai     = parse_time(req.jam_mulai)
+    if req.jam_selesai   is not None: mk.jam_selesai   = parse_time(req.jam_selesai)
+    if req.ruangan       is not None: mk.ruangan       = req.ruangan or None
+    if req.koordinat_lat is not None: mk.koordinat_lat = req.koordinat_lat
+    if req.koordinat_lng is not None: mk.koordinat_lng = req.koordinat_lng
+    if req.izin_tamu     is not None: mk.izin_tamu     = req.izin_tamu
+
+    db.commit()
+    db.refresh(mk)
+    return True, "Matakuliah berhasil diperbarui", _mk_to_dict(mk)
+
+
+def delete_matakuliah(db: Session, mk_id: UUID) -> Tuple[bool, str]:
+    mk = db.query(Matakuliah).filter(Matakuliah.id == mk_id).first()
+    if not mk:
+        return False, "Matakuliah tidak ditemukan"
+
+    nama = mk.nama
+    db.delete(mk)
+    db.commit()
+    return True, f"Matakuliah {nama} berhasil dihapus"
+
+
+def toggle_izin_tamu_admin(
+    db   : Session,
+    mk_id: UUID,
+    izin : bool,
+) -> Tuple[bool, str, Optional[Dict]]:
+    mk = db.query(Matakuliah).filter(Matakuliah.id == mk_id).first()
+    if not mk:
+        return False, "Matakuliah tidak ditemukan", None
+
+    mk.izin_tamu = izin
+    db.commit()
+    db.refresh(mk)
+    status = "diaktifkan" if izin else "dinonaktifkan"
+    return True, f"Izin tamu {mk.nama} berhasil {status}", _mk_to_dict(mk)
