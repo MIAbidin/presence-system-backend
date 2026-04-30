@@ -7,8 +7,10 @@ from app.models.user import User
 from app.config import settings
 
 # Setup bcrypt untuk hashing password
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    bcrypt__rounds=12
+)
 
 # ─── PASSWORD ────────────────────────────────────────────
 
