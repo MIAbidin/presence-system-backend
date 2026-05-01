@@ -816,3 +816,101 @@ def hapus_tamu_admin(
     db.delete(row)
     db.commit()
     return True, f"{mhs_nama} berhasil dihapus dari daftar tamu"
+
+# ════════════════════════════════════════════════════════════
+# FASE 8 — JADWAL PENGGANTI MANAGEMENT
+# ════════════════════════════════════════════════════════════
+
+def list_jadwal_pengganti_admin(
+    db            : "Session",
+    matakuliah_id : "Optional[UUID]" = None,
+    dosen_id      : "Optional[UUID]" = None,
+) -> "Dict":
+    """
+    List semua jadwal pengganti dengan filter opsional.
+    Return data lengkap termasuk nama matakuliah dan dosen.
+    Diurutkan terbaru dulu.
+    """
+    from app.models.jadwal_pengganti import JadwalPengganti
+    from app.models.matakuliah import Matakuliah
+    from app.models.user import User
+
+    query = db.query(JadwalPengganti)
+
+    if matakuliah_id:
+        query = query.filter(JadwalPengganti.matakuliah_id == matakuliah_id)
+    if dosen_id:
+        query = query.filter(JadwalPengganti.dosen_id == dosen_id)
+
+    jp_list = query.order_by(JadwalPengganti.created_at.desc()).all()
+
+    # Bulk load matakuliah dan dosen agar tidak N+1
+    mk_ids    = list({jp.matakuliah_id for jp in jp_list})
+    dosen_ids = list({jp.dosen_id for jp in jp_list})
+
+    mk_map = {
+        mk.id: mk for mk in
+        db.query(Matakuliah).filter(Matakuliah.id.in_(mk_ids)).all()
+    } if mk_ids else {}
+
+    dosen_map = {
+        u.id: u for u in
+        db.query(User).filter(User.id.in_(dosen_ids)).all()
+    } if dosen_ids else {}
+
+    def fmt_time(t):
+        if t is None:
+            return None
+        if hasattr(t, "strftime"):
+            return t.strftime("%H:%M")
+        return str(t)[:5]
+
+    items = []
+    for jp in jp_list:
+        mk    = mk_map.get(jp.matakuliah_id)
+        dosen = dosen_map.get(jp.dosen_id)
+        items.append({
+            "id"              : str(jp.id),
+            "matakuliah_id"   : str(jp.matakuliah_id),
+            "kode_mk"         : mk.kode           if mk    else "-",
+            "nama_matakuliah" : mk.nama            if mk    else "-",
+            "dosen_id"        : str(jp.dosen_id),
+            "nama_dosen"      : dosen.nama_lengkap if dosen else "-",
+            "nidn"            : dosen.nim_nidn     if dosen else "-",
+            "pertemuan_ke"    : jp.pertemuan_ke,
+            "jam_mulai_baru"  : fmt_time(jp.jam_mulai_baru),
+            "jam_selesai_baru": fmt_time(jp.jam_selesai_baru),
+            "ruangan_baru"    : jp.ruangan_baru,
+            "keterangan"      : jp.keterangan,
+            "created_at"      : jp.created_at.isoformat() if jp.created_at else None,
+            "updated_at"      : jp.updated_at.isoformat() if jp.updated_at else None,
+        })
+
+    return {
+        "total": len(items),
+        "items": items,
+    }
+
+
+def delete_jadwal_pengganti_admin(
+    db   : "Session",
+    jp_id: "UUID",
+) -> "Tuple[bool, str]":
+    """
+    Hapus jadwal pengganti berdasarkan ID.
+    Setelah dihapus, scheduler kembali pakai jam_selesai reguler matakuliah.
+    """
+    from app.models.jadwal_pengganti import JadwalPengganti
+    from app.models.matakuliah import Matakuliah
+
+    jp = db.query(JadwalPengganti).filter(JadwalPengganti.id == jp_id).first()
+    if not jp:
+        return False, "Jadwal pengganti tidak ditemukan"
+
+    mk = db.query(Matakuliah).filter(Matakuliah.id == jp.matakuliah_id).first()
+    nama_mk = mk.nama if mk else "matakuliah"
+
+    pertemuan = jp.pertemuan_ke
+    db.delete(jp)
+    db.commit()
+    return True, f"Jadwal pengganti pertemuan {pertemuan} ({nama_mk}) berhasil dihapus"

@@ -4,6 +4,8 @@ app/routers/admin.py
 Fase 3 — GET /admin/dashboard
 Fase 4 — Manajemen Users (mahasiswa & dosen)
 Fase 6 — Manajemen Matakuliah + toggle izin_tamu
+Fase 7 — Enrollment management
+Fase 8 — Jadwal Pengganti (list & delete)
 
 Endpoints:
   GET    /admin/dashboard
@@ -20,6 +22,15 @@ Endpoints:
   PUT    /admin/matakuliah/{mk_id}
   DELETE /admin/matakuliah/{mk_id}
   PATCH  /admin/matakuliah/{mk_id}/izin-tamu
+
+  GET    /admin/matakuliah/{mk_id}/mahasiswa
+  POST   /admin/matakuliah/{mk_id}/enroll
+  POST   /admin/matakuliah/{mk_id}/enroll-bulk
+  DELETE /admin/matakuliah/{mk_id}/unenroll/{mahasiswa_id}
+  DELETE /admin/matakuliah/{mk_id}/tamu/{mahasiswa_id}
+
+  GET    /admin/jadwal-pengganti                 ← BARU Fase 8
+  DELETE /admin/jadwal-pengganti/{jp_id}         ← BARU Fase 8
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -416,4 +427,57 @@ def hapus_tamu(
     success, pesan = admin_service.hapus_tamu_admin(db, mk_id, mahasiswa_id)
     if not success:
         raise HTTPException(status_code=400, detail=pesan)
+    return {"message": pesan}
+
+
+# ════════════════════════════════════════════════════════════
+# FASE 8 — JADWAL PENGGANTI ENDPOINTS
+# ════════════════════════════════════════════════════════════
+
+# ─── GET /admin/jadwal-pengganti ─────────────────────────────
+
+@router.get("/jadwal-pengganti")
+def list_jadwal_pengganti(
+    matakuliah_id: Optional[UUID] = Query(None, description="Filter by matakuliah UUID"),
+    dosen_id     : Optional[UUID] = Query(None, description="Filter by dosen UUID"),
+    admin        : User           = Depends(require_admin),
+    db           : Session        = Depends(get_db),
+):
+    """
+    List semua jadwal pengganti yang dibuat dosen, dengan filter opsional.
+
+    Dapat difilter dengan:
+    - matakuliah_id: hanya tampilkan jadwal pengganti untuk MK tertentu
+    - dosen_id: hanya tampilkan jadwal pengganti dari dosen tertentu
+
+    Diurutkan dari yang terbaru (created_at DESC).
+    """
+    return admin_service.list_jadwal_pengganti_admin(
+        db,
+        matakuliah_id=matakuliah_id,
+        dosen_id=dosen_id,
+    )
+
+
+# ─── DELETE /admin/jadwal-pengganti/{jp_id} ──────────────────
+
+@router.delete("/jadwal-pengganti/{jp_id}")
+def delete_jadwal_pengganti(
+    jp_id: UUID,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    """
+    Hapus jadwal pengganti berdasarkan ID.
+
+    Setelah dihapus:
+    - Scheduler kembali menggunakan jam_selesai reguler dari tabel matakuliah
+    - Riwayat sesi yang sudah menggunakan jadwal pengganti ini tidak berubah
+
+    Digunakan admin untuk membersihkan jadwal pengganti yang keliru atau sudah
+    tidak relevan.
+    """
+    success, pesan = admin_service.delete_jadwal_pengganti_admin(db, jp_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=pesan)
     return {"message": pesan}
