@@ -636,3 +636,183 @@ def toggle_izin_tamu_admin(
     db.refresh(mk)
     status = "diaktifkan" if izin else "dinonaktifkan"
     return True, f"Izin tamu {mk.nama} berhasil {status}", _mk_to_dict(mk)
+
+# ════════════════════════════════════════════════════════════
+# FASE 7 — ENROLLMENT MANAGEMENT
+# ════════════════════════════════════════════════════════════
+
+def get_mahasiswa_matakuliah(
+    db   : Session,
+    mk_id: UUID,
+) -> Dict:
+    """
+    Ambil daftar mahasiswa enrolled di satu matakuliah.
+    Pisahkan mahasiswa asli (is_tamu=False) dan tamu (is_tamu=True).
+    """
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+
+    mk = db.query(Matakuliah).filter(Matakuliah.id == mk_id).first()
+    if not mk:
+        return None
+
+    rows = (
+        db.query(MahasiswaMatakuliah)
+        .filter(MahasiswaMatakuliah.matakuliah_id == mk_id)
+        .all()
+    )
+
+    mahasiswa_list = []
+    for row in rows:
+        mhs = row.mahasiswa
+        if not mhs:
+            continue
+        mahasiswa_list.append({
+            "mahasiswa_id" : str(mhs.id),
+            "nim"          : mhs.nim_nidn,
+            "nama_lengkap" : mhs.nama_lengkap,
+            "email"        : mhs.email,
+            "program_studi": mhs.program_studi,
+            "is_active"    : mhs.is_active,
+            "is_tamu"      : row.is_tamu,
+            "kelas_asal"   : row.kelas_asal,
+            "enrolled_at"  : row.created_at.isoformat() if row.created_at else None,
+        })
+
+    asli = [m for m in mahasiswa_list if not m["is_tamu"]]
+    tamu = [m for m in mahasiswa_list if m["is_tamu"]]
+
+    return {
+        "matakuliah_id"  : str(mk.id),
+        "kode"           : mk.kode,
+        "nama"           : mk.nama,
+        "hari"           : mk.hari,
+        "jam_mulai"      : mk.jam_mulai.strftime("%H:%M") if mk.jam_mulai else None,
+        "jam_selesai"    : mk.jam_selesai.strftime("%H:%M") if mk.jam_selesai else None,
+        "izin_tamu"      : mk.izin_tamu,
+        "total_asli"     : len(asli),
+        "total_tamu"     : len(tamu),
+        "mahasiswa_asli" : sorted(asli, key=lambda x: x["nama_lengkap"]),
+        "mahasiswa_tamu" : sorted(tamu, key=lambda x: x["nama_lengkap"]),
+    }
+
+
+def enroll_mahasiswa(
+    db          : Session,
+    mk_id       : UUID,
+    mahasiswa_id: UUID,
+) -> Tuple[bool, str]:
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+
+    mk  = db.query(Matakuliah).filter(Matakuliah.id == mk_id).first()
+    mhs = db.query(User).filter(User.id == mahasiswa_id, User.role == UserRole.mahasiswa).first()
+
+    if not mk:
+        return False, "Matakuliah tidak ditemukan"
+    if not mhs:
+        return False, "Mahasiswa tidak ditemukan"
+
+    existing = db.query(MahasiswaMatakuliah).filter(
+        MahasiswaMatakuliah.mahasiswa_id  == mahasiswa_id,
+        MahasiswaMatakuliah.matakuliah_id == mk_id,
+    ).first()
+    if existing:
+        return False, f"{mhs.nama_lengkap} sudah terdaftar di matakuliah ini"
+
+    db.add(MahasiswaMatakuliah(
+        mahasiswa_id  = mahasiswa_id,
+        matakuliah_id = mk_id,
+        is_tamu       = False,
+        kelas_asal    = None,
+    ))
+    db.commit()
+    return True, f"{mhs.nama_lengkap} berhasil didaftarkan ke {mk.nama}"
+
+
+def enroll_bulk(
+    db           : Session,
+    mk_id        : UUID,
+    mahasiswa_ids: List[UUID],
+) -> Dict:
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+
+    mk = db.query(Matakuliah).filter(Matakuliah.id == mk_id).first()
+    if not mk:
+        return {"success": False, "message": "Matakuliah tidak ditemukan"}
+
+    berhasil = 0
+    gagal    = []
+
+    for mhs_id in mahasiswa_ids:
+        mhs = db.query(User).filter(
+            User.id   == mhs_id,
+            User.role == UserRole.mahasiswa
+        ).first()
+        if not mhs:
+            gagal.append({"id": str(mhs_id), "alasan": "Mahasiswa tidak ditemukan"})
+            continue
+
+        existing = db.query(MahasiswaMatakuliah).filter(
+            MahasiswaMatakuliah.mahasiswa_id  == mhs_id,
+            MahasiswaMatakuliah.matakuliah_id == mk_id,
+        ).first()
+        if existing:
+            gagal.append({"id": str(mhs_id), "alasan": f"{mhs.nama_lengkap} sudah terdaftar"})
+            continue
+
+        db.add(MahasiswaMatakuliah(
+            mahasiswa_id  = mhs_id,
+            matakuliah_id = mk_id,
+            is_tamu       = False,
+            kelas_asal    = None,
+        ))
+        berhasil += 1
+
+    db.commit()
+    return {
+        "success" : True,
+        "message" : f"{berhasil} mahasiswa berhasil didaftarkan ke {mk.nama}",
+        "berhasil": berhasil,
+        "gagal"   : gagal,
+    }
+
+
+def unenroll_mahasiswa(
+    db          : Session,
+    mk_id       : UUID,
+    mahasiswa_id: UUID,
+) -> Tuple[bool, str]:
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+
+    row = db.query(MahasiswaMatakuliah).filter(
+        MahasiswaMatakuliah.mahasiswa_id  == mahasiswa_id,
+        MahasiswaMatakuliah.matakuliah_id == mk_id,
+    ).first()
+    if not row:
+        return False, "Mahasiswa tidak terdaftar di matakuliah ini"
+
+    mhs_nama = row.mahasiswa.nama_lengkap if row.mahasiswa else "Mahasiswa"
+    db.delete(row)
+    db.commit()
+    return True, f"{mhs_nama} berhasil dihapus dari matakuliah"
+
+
+def hapus_tamu_admin(
+    db          : Session,
+    mk_id       : UUID,
+    mahasiswa_id: UUID,
+) -> Tuple[bool, str]:
+    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+
+    row = db.query(MahasiswaMatakuliah).filter(
+        MahasiswaMatakuliah.mahasiswa_id  == mahasiswa_id,
+        MahasiswaMatakuliah.matakuliah_id == mk_id,
+    ).first()
+    if not row:
+        return False, "Mahasiswa tidak terdaftar di matakuliah ini"
+    if not row.is_tamu:
+        return False, "Mahasiswa ini bukan tamu. Gunakan endpoint unenroll untuk menghapus mahasiswa asli."
+
+    mhs_nama = row.mahasiswa.nama_lengkap if row.mahasiswa else "Mahasiswa"
+    db.delete(row)
+    db.commit()
+    return True, f"{mhs_nama} berhasil dihapus dari daftar tamu"

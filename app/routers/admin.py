@@ -24,7 +24,7 @@ Endpoints:
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
-from typing import Optional
+from typing import List, Optional
 
 from app.database.db import get_db
 from app.models.user import User, UserRole
@@ -338,3 +338,82 @@ def toggle_izin_tamu(
     if not success:
         raise HTTPException(status_code=404, detail=pesan)
     return {"message": pesan, "matakuliah": mk}
+
+# ════════════════════════════════════════════════════════════
+# FASE 7 — ENROLLMENT MANAGEMENT
+# ════════════════════════════════════════════════════════════
+
+class EnrollRequest(BaseModel):
+    mahasiswa_id: UUID
+
+class EnrollBulkRequest(BaseModel):
+    mahasiswa_ids: List[UUID]
+
+# ─── GET /admin/matakuliah/{mk_id}/mahasiswa ─────────────────
+
+@router.get("/matakuliah/{mk_id}/mahasiswa")
+def get_mahasiswa_matakuliah(
+    mk_id: UUID,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    result = admin_service.get_mahasiswa_matakuliah(db, mk_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Matakuliah tidak ditemukan")
+    return result
+
+# ─── POST /admin/matakuliah/{mk_id}/enroll ───────────────────
+
+@router.post("/matakuliah/{mk_id}/enroll", status_code=201)
+def enroll_mahasiswa(
+    mk_id: UUID,
+    req  : EnrollRequest,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    success, pesan = admin_service.enroll_mahasiswa(db, mk_id, req.mahasiswa_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=pesan)
+    return {"message": pesan}
+
+# ─── POST /admin/matakuliah/{mk_id}/enroll-bulk ──────────────
+
+@router.post("/matakuliah/{mk_id}/enroll-bulk")
+def enroll_bulk(
+    mk_id: UUID,
+    req  : EnrollBulkRequest,
+    admin: User    = Depends(require_admin),
+    db   : Session = Depends(get_db),
+):
+    result = admin_service.enroll_bulk(db, mk_id, req.mahasiswa_ids)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+# ─── DELETE /admin/matakuliah/{mk_id}/unenroll/{mahasiswa_id} ─
+
+@router.delete("/matakuliah/{mk_id}/unenroll/{mahasiswa_id}")
+def unenroll_mahasiswa(
+    mk_id       : UUID,
+    mahasiswa_id: UUID,
+    admin       : User    = Depends(require_admin),
+    db          : Session = Depends(get_db),
+):
+    success, pesan = admin_service.unenroll_mahasiswa(db, mk_id, mahasiswa_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=pesan)
+    return {"message": pesan}
+
+# ─── DELETE /admin/matakuliah/{mk_id}/tamu/{mahasiswa_id} ────
+
+@router.delete("/matakuliah/{mk_id}/tamu/{mahasiswa_id}")
+def hapus_tamu(
+    mk_id       : UUID,
+    mahasiswa_id: UUID,
+    admin       : User    = Depends(require_admin),
+    db          : Session = Depends(get_db),
+):
+    success, pesan = admin_service.hapus_tamu_admin(db, mk_id, mahasiswa_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=pesan)
+    return {"message": pesan}
