@@ -5,6 +5,7 @@ Fase 3 — Statistik dashboard
 Fase 4 — CRUD user (mahasiswa & dosen), reset wajah, reset password, face diagnose
 Fase 6 — CRUD matakuliah + toggle izin_tamu
 """
+
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
@@ -17,7 +18,7 @@ from app.models.matakuliah import Matakuliah
 from app.models.sesi import SesiPresensi, SesiStatus
 from app.models.presensi import Presensi, PresensiStatus
 from app.models.face_embedding import FaceEmbedding
-
+from app.models.ruangan import Ruangan
 
 # ════════════════════════════════════════════════════════════
 # FASE 3 — DASHBOARD STATS
@@ -914,3 +915,223 @@ def delete_jadwal_pengganti_admin(
     db.delete(jp)
     db.commit()
     return True, f"Jadwal pengganti pertemuan {pertemuan} ({nama_mk}) berhasil dihapus"
+
+# ════════════════════════════════════════════════════════════
+# FASE A — RUANGAN MANAGEMENT
+# ════════════════════════════════════════════════════════════
+
+# Tipe ruangan yang valid
+TIPE_RUANGAN_VALID = ["kuliah", "lab", "seminar", "lainnya"]
+
+
+def _ruangan_to_dict(r) -> dict:
+    """Serialize Ruangan model ke dict yang aman untuk JSON response."""
+    return {
+        "id"           : str(r.id),
+        "kode"         : r.kode,
+        "nama"         : r.nama,
+        "tipe"         : r.tipe,
+        "kapasitas"    : r.kapasitas,
+        "gedung"       : r.gedung,
+        "lantai"       : r.lantai,
+        "koordinat_lat": r.koordinat_lat,
+        "koordinat_lng": r.koordinat_lng,
+        "keterangan"   : r.keterangan,
+        "is_active"    : r.is_active,
+        "created_at"   : r.created_at.isoformat() if r.created_at else None,
+        "updated_at"   : r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+def list_ruangan(
+    db      ,
+    search  = None,
+    tipe    = None,
+    aktif_only: bool = False,
+    page    : int = 1,
+    limit   : int = 20,
+) -> dict:
+    """
+    List ruangan dengan filter, pencarian, dan pagination.
+    aktif_only=True digunakan untuk endpoint dropdown (GET /ruangan/aktif).
+    """
+    from app.models.ruangan import Ruangan
+    from sqlalchemy import func, or_
+
+    query = db.query(Ruangan)
+
+    if aktif_only:
+        query = query.filter(Ruangan.is_active == True)
+
+    if tipe and tipe != "semua":
+        query = query.filter(Ruangan.tipe == tipe)
+
+    if search:
+        term = f"%{search.lower()}%"
+        query = query.filter(or_(
+            func.lower(Ruangan.kode).like(term),
+            func.lower(Ruangan.nama).like(term),
+            func.lower(Ruangan.gedung).like(term),
+        ))
+
+    total    = query.count()
+    ruangans = (
+        query
+        .order_by(Ruangan.kode)
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "items"      : [_ruangan_to_dict(r) for r in ruangans],
+        "total"      : total,
+        "page"       : page,
+        "limit"      : limit,
+        "total_pages": max(1, (total + limit - 1) // limit),
+    }
+
+
+def create_ruangan(db, req) -> tuple:
+    """
+    Buat ruangan baru.
+    Return: (success, pesan, ruangan_dict | None)
+    """
+    from app.models.ruangan import Ruangan
+
+    kode_baru = req.kode.strip().upper()
+
+    # Cek duplikat kode
+    if db.query(Ruangan).filter(Ruangan.kode == kode_baru).first():
+        return False, f"Kode ruangan '{kode_baru}' sudah digunakan", None
+
+    # Validasi tipe
+    if req.tipe and req.tipe not in TIPE_RUANGAN_VALID:
+        return False, f"Tipe tidak valid. Pilih dari: {', '.join(TIPE_RUANGAN_VALID)}", None
+
+    ruangan = Ruangan(
+        kode          = kode_baru,
+        nama          = req.nama.strip(),
+        tipe          = req.tipe or None,
+        kapasitas     = req.kapasitas,
+        gedung        = req.gedung or None,
+        lantai        = req.lantai,
+        koordinat_lat = req.koordinat_lat,
+        koordinat_lng = req.koordinat_lng,
+        keterangan    = req.keterangan or None,
+        is_active     = True,
+    )
+    db.add(ruangan)
+    db.commit()
+    db.refresh(ruangan)
+    return True, f"Ruangan {ruangan.kode} ({ruangan.nama}) berhasil dibuat", _ruangan_to_dict(ruangan)
+
+
+def update_ruangan(db, ruangan_id, req) -> tuple:
+    """
+    Update data ruangan (semua field opsional — partial update).
+    Return: (success, pesan, ruangan_dict | None)
+    """
+    from app.models.ruangan import Ruangan
+
+    ruangan = db.query(Ruangan).filter(Ruangan.id == ruangan_id).first()
+    if not ruangan:
+        return False, "Ruangan tidak ditemukan", None
+
+    # Validasi tipe jika dikirim
+    if req.tipe is not None and req.tipe and req.tipe not in TIPE_RUANGAN_VALID:
+        return False, f"Tipe tidak valid. Pilih dari: {', '.join(TIPE_RUANGAN_VALID)}", None
+
+    # Validasi kode unik jika berubah
+    if req.kode is not None:
+        kode_baru = req.kode.strip().upper()
+        if kode_baru != ruangan.kode:
+            existing = db.query(Ruangan).filter(
+                Ruangan.kode == kode_baru,
+                Ruangan.id   != ruangan_id,
+            ).first()
+            if existing:
+                return False, f"Kode '{kode_baru}' sudah digunakan ruangan lain", None
+        ruangan.kode = kode_baru
+
+    if req.nama          is not None: ruangan.nama          = req.nama.strip()
+    if req.tipe          is not None: ruangan.tipe          = req.tipe or None
+    if req.kapasitas     is not None: ruangan.kapasitas     = req.kapasitas
+    if req.gedung        is not None: ruangan.gedung        = req.gedung or None
+    if req.lantai        is not None: ruangan.lantai        = req.lantai
+    if req.koordinat_lat is not None: ruangan.koordinat_lat = req.koordinat_lat
+    if req.koordinat_lng is not None: ruangan.koordinat_lng = req.koordinat_lng
+    if req.keterangan    is not None: ruangan.keterangan    = req.keterangan or None
+    if req.is_active     is not None: ruangan.is_active     = req.is_active
+
+    db.commit()
+    db.refresh(ruangan)
+    return True, f"Ruangan {ruangan.kode} berhasil diperbarui", _ruangan_to_dict(ruangan)
+
+
+def delete_ruangan(db, ruangan_id) -> tuple:
+    """
+    Hapus ruangan.
+    Cek FK ke matakuliah (field ruangan string) sebelum hapus — untuk keamanan.
+    Return: (success, pesan)
+    """
+    from app.models.ruangan import Ruangan
+    from app.models.matakuliah import Matakuliah
+
+    ruangan = db.query(Ruangan).filter(Ruangan.id == ruangan_id).first()
+    if not ruangan:
+        return False, "Ruangan tidak ditemukan"
+
+    # Cek apakah kode ruangan ini masih dipakai di field string matakuliah.ruangan
+    # (backward compat — sebelum ada FK proper di Fase B)
+    matakuliah_pakai = db.query(Matakuliah).filter(
+        Matakuliah.ruangan == ruangan.kode
+    ).count()
+    if matakuliah_pakai > 0:
+        return False, (
+            f"Ruangan {ruangan.kode} masih digunakan oleh {matakuliah_pakai} matakuliah. "
+            "Ubah ruangan matakuliah tersebut terlebih dahulu sebelum menghapus."
+        )
+
+    nama = f"{ruangan.kode} ({ruangan.nama})"
+    db.delete(ruangan)
+    db.commit()
+    return True, f"Ruangan {nama} berhasil dihapus"
+
+
+def toggle_ruangan_active(db, ruangan_id, is_active: bool) -> tuple:
+    """
+    Toggle status aktif ruangan tanpa membuka modal.
+    Return: (success, pesan, ruangan_dict | None)
+    """
+    from app.models.ruangan import Ruangan
+
+    ruangan = db.query(Ruangan).filter(Ruangan.id == ruangan_id).first()
+    if not ruangan:
+        return False, "Ruangan tidak ditemukan", None
+
+    ruangan.is_active = is_active
+    db.commit()
+    db.refresh(ruangan)
+    status = "diaktifkan" if is_active else "dinonaktifkan"
+    return True, f"Ruangan {ruangan.kode} berhasil {status}", _ruangan_to_dict(ruangan)
+
+
+def get_ruangan_stats(db) -> dict:
+    """Hitung statistik ruangan untuk stat strip di halaman Ruangan.tsx."""
+    from app.models.ruangan import Ruangan
+    from sqlalchemy import func
+
+    total  = db.query(Ruangan).count()
+    aktif  = db.query(Ruangan).filter(Ruangan.is_active == True).count()
+    lab    = db.query(Ruangan).filter(Ruangan.tipe == "lab").count()
+    kuliah = db.query(Ruangan).filter(Ruangan.tipe == "kuliah").count()
+    seminar= db.query(Ruangan).filter(Ruangan.tipe == "seminar").count()
+
+    return {
+        "total"  : total,
+        "aktif"  : aktif,
+        "lab"    : lab,
+        "kuliah" : kuliah,
+        "seminar": seminar,
+    }
