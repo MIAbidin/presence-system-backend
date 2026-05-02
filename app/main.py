@@ -1,5 +1,5 @@
 """
-app/main.py — Update Fase 3
+app/main.py — Update Fase 11
 """
 from contextlib import asynccontextmanager
 import logging
@@ -11,6 +11,7 @@ from app.routers import (
     auth, face, sesi, presensi,
     matakuliah, mahasiswa, jadwal, dosen, admin, admin_import, admin_laporan
 )
+from app.routers.admin_audit import router as admin_fase11_router
 from app.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "Presensi Face Recognition API",
-    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase 3 + Admin Dashboard.",
-    version     = "3.1.0",
+    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase 11.",
+    version     = "3.2.0",
     lifespan    = lifespan,
 )
 
@@ -52,11 +53,12 @@ app.include_router(dosen.router)
 app.include_router(admin.router)
 app.include_router(admin_import.router)
 app.include_router(admin_laporan.router)
+app.include_router(admin_fase11_router)   # ← Fase 11
 
 @app.get("/", tags=["Health Check"])
 def root():
     return {
-        "message": "Backend Presensi v3.1 berjalan!",
+        "message": "Backend Presensi v3.2 berjalan!",
         "status" : "ok",
     }
 
@@ -66,7 +68,12 @@ def health():
     from app.scheduler import get_scheduler
     scheduler = get_scheduler()
     jobs = [
-        {"id": j.id, "name": j.name, "next_run": str(j.next_run_time)}
+        {
+            "id"           : j.id,
+            "name"         : j.name,
+            "next_run_time": str(j.next_run_time),
+            "trigger"      : str(j.trigger),
+        }
         for j in scheduler.get_jobs()
     ] if scheduler.running else []
     return {
