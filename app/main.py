@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
     auth, face, sesi, presensi,
-    matakuliah, mahasiswa, jadwal, dosen, admin, admin_import, admin_laporan, admin_audit,admin_ruangan
+    matakuliah, mahasiswa, jadwal, dosen, admin, admin_import, admin_laporan, admin_audit,admin_ruangan, admin_kelas
 )
 from app.scheduler import start_scheduler, stop_scheduler
 
@@ -54,6 +54,7 @@ app.include_router(admin_import.router)
 app.include_router(admin_laporan.router)
 app.include_router(admin_audit.router)
 app.include_router(admin_ruangan.router)
+app.include_router(admin_kelas.router)
 
 @app.get("/", tags=["Health Check"])
 def root():
