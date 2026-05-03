@@ -10,18 +10,14 @@ class MahasiswaMatakuliah(Base):
     """
     Tabel relasi mahasiswa ↔ matakuliah.
 
-    Kolom baru (Fase 1):
+    Kolom Fase 1:
     - is_tamu   : True jika mahasiswa ini dari kelas lain yang diizinkan
     - kelas_asal: Label kelas asalnya, mis. "IF302 - Kelas B"
-                  Diisi otomatis dari matakuliah resmi mahasiswa,
-                  atau diisi manual saat dosen tambah tamu.
 
-    Aturan:
-    - Satu mahasiswa tidak bisa terdaftar DUA KALI di matakuliah yang sama
-      (constraint UNIQUE tetap berlaku).
-    - Mahasiswa asli kelas: is_tamu=False, kelas_asal=None
-    - Mahasiswa tamu manual: is_tamu=True, kelas_asal="IF302 - Kelas B"
-    - Mahasiswa tamu otomatis (izin_tamu=True): is_tamu=True, kelas_asal diisi sistem
+    Kolom Fase B:
+    - kelas_id  : FK ke kelas_matakuliah (nullable untuk backward compat).
+                  NULL = enrollment lama sebelum Fase B,
+                  filled = enrollment baru per kelas spesifik.
     """
     __tablename__ = "mahasiswa_matakuliah"
 
@@ -37,11 +33,19 @@ class MahasiswaMatakuliah(Base):
         nullable=False
     )
 
-    # ── BARU (Fase 1) ──────────────────────────────────────
+    # ── Fase 1 ─────────────────────────────────────────────
     is_tamu    = Column(Boolean, default=False, nullable=False)
-    # Contoh isi: "IF302 - Kelas B" atau "SI201 - Kelas A"
-    # NULL jika mahasiswa asli kelas ini
     kelas_asal = Column(String(100), nullable=True)
+
+    # ── Fase B: FK ke kelas_matakuliah (nullable, backward compat) ──
+    # NULL = enrollment lama (sebelum multi-kelas)
+    # filled = enrollment baru per kelas spesifik
+    kelas_id   = Column(
+        UUID(as_uuid=True),
+        ForeignKey("kelas_matakuliah.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -53,5 +57,12 @@ class MahasiswaMatakuliah(Base):
         ),
     )
 
-    mahasiswa  = relationship("User",        foreign_keys=[mahasiswa_id])
-    matakuliah = relationship("Matakuliah",  foreign_keys=[matakuliah_id])
+    mahasiswa  = relationship("User",              foreign_keys=[mahasiswa_id])
+    matakuliah = relationship("Matakuliah",        foreign_keys=[matakuliah_id])
+
+    # ── Fase B: relasi ke kelas ──────────────────────────────
+    kelas      = relationship(
+        "KelasMatakuliah",
+        back_populates="mahasiswa",
+        foreign_keys=[kelas_id],
+    )

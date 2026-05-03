@@ -14,29 +14,34 @@ class Matakuliah(Base):
     nama          = Column(String(100), nullable=False)
     sks           = Column(Integer,     nullable=False)
 
-    # Jadwal reguler
-    hari          = Column(String(10),  nullable=True)   # 'Senin','Selasa',dst
-    jam_mulai     = Column(Time,        nullable=True)   # '08:00'
-    jam_selesai   = Column(Time,        nullable=True)   # '09:40'
-    ruangan       = Column(String(50),  nullable=True)   # 'Lab A-301'
+    # Jadwal reguler (dipakai jika tidak ada kelas_matakuliah)
+    hari          = Column(String(10),  nullable=True)
+    jam_mulai     = Column(Time,        nullable=True)
+    jam_selesai   = Column(Time,        nullable=True)
+    ruangan       = Column(String(50),  nullable=True)
 
     # GPS ruang kelas (untuk geofencing mode offline)
     koordinat_lat = Column(Float,       nullable=True)
     koordinat_lng = Column(Float,       nullable=True)
 
-    # ── BARU (Fase 1) ──────────────────────────────────────
-    # Toggle: apakah mahasiswa dari kelas/matakuliah lain boleh
-    # presensi di sesi ini TANPA perlu diizinkan manual oleh dosen.
-    # TRUE  → siapapun yang punya wajah terdaftar bisa presensi
-    # FALSE → hanya yang ada di daftar mahasiswa kelas ini (+ tamu manual)
+    # ── Fase 1 ──────────────────────────────────────────────
     izin_tamu     = Column(Boolean, default=False, nullable=False)
 
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Relasi ke jadwal pengganti (baru di Fase 1)
+    # Relasi ke jadwal pengganti
     jadwal_pengganti = relationship(
         "JadwalPengganti",
         back_populates="matakuliah",
         cascade="all, delete",
         order_by="JadwalPengganti.pertemuan_ke",
+    )
+
+    # ── Fase B: Relasi ke kelas_matakuliah ──────────────────
+    kelas_list = relationship(
+        "KelasMatakuliah",
+        back_populates="matakuliah",
+        cascade="all, delete",
+        order_by="KelasMatakuliah.kode_kelas",
+        foreign_keys="KelasMatakuliah.matakuliah_id",
     )
