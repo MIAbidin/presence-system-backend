@@ -5,9 +5,10 @@
 from app.models.user import User
 from app.models.face_embedding import FaceEmbedding
 from app.models.matakuliah import Matakuliah          # sudah ada + izin_tamu (baru)
-from app.models.jadwal_pengganti import JadwalPengganti  # ← BARU (Fase 1)
-from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah  # sudah ada + is_tamu, kelas_asal (baru)
+from app.models.jadwal_pengganti import JadwalPengganti  # ← Fase 1
+from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah  # sudah ada + is_tamu, kelas_asal, kelas_id (baru)
 from app.models.sesi import SesiPresensi
 from app.models.kode_usage import KodeUsage
 from app.models.presensi import Presensi
-from app.models.ruangan import Ruangan
+from app.models.ruangan import Ruangan                # ← Fase A
+from app.models.kelas_matakuliah import KelasMatakuliah  # ← Fase B

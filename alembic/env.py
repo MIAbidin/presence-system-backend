@@ -20,7 +20,8 @@ from app.models.kode_usage import KodeUsage
 from app.models.presensi import Presensi
 from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
 from app.models.jadwal_pengganti import JadwalPengganti
-from app.models.ruangan import Ruangan  # ← Fase A
+from app.models.ruangan import Ruangan            # ← Fase A
+from app.models.kelas_matakuliah import KelasMatakuliah  # ← Fase B
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
