@@ -12,3 +12,5 @@ from app.models.kode_usage import KodeUsage
 from app.models.presensi import Presensi
 from app.models.ruangan import Ruangan                # ← Fase A
 from app.models.kelas_matakuliah import KelasMatakuliah  # ← Fase B
+from app.models.audit_log import AuditLog
+from app.models.program_studi import ProgramStudi  # ← Fase D

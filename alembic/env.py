@@ -22,6 +22,8 @@ from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
 from app.models.jadwal_pengganti import JadwalPengganti
 from app.models.ruangan import Ruangan            # ← Fase A
 from app.models.kelas_matakuliah import KelasMatakuliah  # ← Fase B
+from app.models.program_studi import ProgramStudi
+from app.models.audit_log import AuditLog
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
