@@ -10,3 +10,4 @@ from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah  # sudah ada + i
 from app.models.sesi import SesiPresensi
 from app.models.kode_usage import KodeUsage
 from app.models.presensi import Presensi
+from app.models.ruangan import Ruangan
