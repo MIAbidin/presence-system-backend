@@ -60,6 +60,8 @@ optree==0.19.0
 packaging==26.1
 pandas==3.0.2
 passlib==1.7.4
+pdfminer.six==20251230
+pdfplumber==0.11.9
 pgvector==0.4.2
 pillow==12.2.0
 protobuf==7.34.1
@@ -70,6 +72,7 @@ pydantic==2.13.3
 pydantic-settings==2.14.0
 pydantic_core==2.46.3
 Pygments==2.20.0
+pypdfium2==5.8.0
 PySocks==1.7.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
