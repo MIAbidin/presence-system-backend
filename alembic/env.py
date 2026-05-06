@@ -1,3 +1,5 @@
+# alembic/env.py
+# Update Fase E: tambah import KonfigurasiSistem
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
@@ -20,10 +22,11 @@ from app.models.kode_usage import KodeUsage
 from app.models.presensi import Presensi
 from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
 from app.models.jadwal_pengganti import JadwalPengganti
-from app.models.ruangan import Ruangan            # ← Fase A
-from app.models.kelas_matakuliah import KelasMatakuliah  # ← Fase B
+from app.models.ruangan import Ruangan
+from app.models.kelas_matakuliah import KelasMatakuliah
 from app.models.program_studi import ProgramStudi
 from app.models.audit_log import AuditLog
+from app.models.konfigurasi_sistem import KonfigurasiSistem   # ← Fase E
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

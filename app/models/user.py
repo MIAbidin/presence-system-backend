@@ -1,3 +1,5 @@
+# app/models/user.py
+# Update Fase E: tambah nilai super_admin ke enum UserRole
 import uuid
 import enum
 
@@ -10,9 +12,10 @@ from app.database.db import Base
 
 
 class UserRole(str, enum.Enum):
-    mahasiswa = "mahasiswa"
-    dosen = "dosen"
-    admin = "admin"
+    mahasiswa   = "mahasiswa"
+    dosen       = "dosen"
+    admin       = "admin"
+    super_admin = "super_admin"   # ← Fase E: Super Admin (IT Kampus)
 
 
 class User(Base):
@@ -20,9 +23,9 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    nim_nidn = Column(String(20), unique=True, nullable=False)
+    nim_nidn     = Column(String(20),  unique=True, nullable=False)
     nama_lengkap = Column(String(100), nullable=False)
-    email = Column(String(100), unique=True, nullable=False)
+    email        = Column(String(100), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
 
     role = Column(Enum(UserRole), nullable=False)
@@ -46,9 +49,9 @@ class User(Base):
     )
 
     is_face_registered = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
+    is_active          = Column(Boolean, default=True)
 
-    # 🔥 NOTIFIKASI
+    # Notifikasi push
     fcm_token = Column(String(255), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
