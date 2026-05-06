@@ -37,7 +37,7 @@ from app.schemas.superadmin import (
     UpdateKonfigurasiRequest,
 )
 from app.services import superadmin_service
-from app.services.audit_service import tulis_audit_log
+from app.services.audit_service import catat as tulis_audit_log
 
 logger = logging.getLogger(__name__)
 
