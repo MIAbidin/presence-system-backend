@@ -1,7 +1,5 @@
-"""
-app/main.py — Update Fase D
-Tambah router admin_program_studi untuk endpoint CRUD Program Studi.
-"""
+# app/main.py
+# Update Fase E: daftarkan superadmin router, bump versi ke v3.4.0
 from contextlib import asynccontextmanager
 import logging
 
@@ -14,7 +12,8 @@ from app.routers import (
     admin_import, admin_laporan, admin_audit,
     admin_ruangan, admin_kelas, admin_import_jadwal,
 )
-from app.routers.admin_program_studi import router as admin_program_studi_router  # ← Fase D
+from app.routers.admin_program_studi import router as admin_program_studi_router
+from app.routers.superadmin import router as superadmin_router   # ← Fase E
 from app.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -31,8 +30,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "Presensi Face Recognition API",
-    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase D.",
-    version     = "3.3.0",
+    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase E (Super Admin).",
+    version     = "3.4.0",
     lifespan    = lifespan,
 )
 
@@ -60,13 +59,14 @@ app.include_router(admin_audit.router)
 app.include_router(admin_ruangan.router)
 app.include_router(admin_kelas.router)
 app.include_router(admin_import_jadwal.router)
-app.include_router(admin_program_studi_router)   # ← Fase D
+app.include_router(admin_program_studi_router)
+app.include_router(superadmin_router)   # ← Fase E
 
 
 @app.get("/", tags=["Health Check"])
 def root():
     return {
-        "message": "Backend Presensi v3.3 berjalan!",
+        "message": "Backend Presensi v3.4 berjalan!",
         "status" : "ok",
     }
 
