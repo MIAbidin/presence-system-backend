@@ -19,6 +19,8 @@ from app.models.sesi import SesiPresensi, SesiStatus
 from app.models.presensi import Presensi, PresensiStatus
 from app.models.face_embedding import FaceEmbedding
 from app.models.ruangan import Ruangan
+from app.models.kelas_matakuliah import KelasMatakuliah
+from app.utils.slot_utils import SLOT_MAPPING, get_slot_sekarang
 
 # ════════════════════════════════════════════════════════════
 # FASE 3 — DASHBOARD STATS
@@ -59,6 +61,7 @@ def get_dashboard_stats(db: Session) -> Dict[str, Any]:
         "distribusi_status"        : _get_distribusi_status(db),
         "top_mk_kehadiran_terendah": _get_top_mk_kehadiran_terendah(db),
         "scheduler_status"         : _get_scheduler_status(),
+        "jadwal_hari_ini": _get_jadwal_hari_ini(db),
     }
 
 
@@ -180,6 +183,139 @@ def _get_scheduler_status() -> Dict:
     except Exception:
         return {"running": False, "status": "unknown", "jobs": []}
 
+
+WEEKDAY_TO_HARI = {
+    0: "Senin",
+    1: "Selasa",
+    2: "Rabu",
+    3: "Kamis",
+    4: "Jumat",
+    5: "Sabtu",
+    6: "Minggu",
+}
+ 
+ 
+def _get_jadwal_hari_ini(db: "Session") -> "List[Dict]":
+    """
+    Ambil semua kelas yang jadwalnya hari ini.
+    Tandai kelas yang slot-nya sedang aktif sekarang (is_aktif_sekarang=True).
+ 
+    Dipakai di Dashboard.tsx untuk card 'Kelas Aktif Sekarang'.
+    Polling setiap 5 menit dari frontend.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.models.kelas_matakuliah import KelasMatakuliah
+    from app.models.matakuliah import Matakuliah
+    from app.models.ruangan import Ruangan
+    from app.models.user import User
+    from app.models.sesi import SesiPresensi, SesiStatus
+    from app.utils.slot_utils import SLOT_MAPPING, get_slot_sekarang
+ 
+    try:
+        now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
+        hari_ini = WEEKDAY_TO_HARI.get(now_wib.weekday(), "")
+        slot_sekarang = get_slot_sekarang()
+ 
+        # Ambil semua kelas aktif yang jadwalnya hari ini
+        kelas_list = (
+            db.query(KelasMatakuliah)
+            .filter(
+                KelasMatakuliah.hari == hari_ini,
+                KelasMatakuliah.is_active == True,
+                KelasMatakuliah.slot_mulai.isnot(None),
+                KelasMatakuliah.slot_selesai.isnot(None),
+            )
+            .order_by(KelasMatakuliah.slot_mulai)
+            .all()
+        )
+ 
+        if not kelas_list:
+            return []
+ 
+        # Bulk load matakuliah, ruangan, dosen
+        mk_ids     = list({k.matakuliah_id for k in kelas_list if k.matakuliah_id})
+        ruangan_ids = list({k.ruangan_id for k in kelas_list if k.ruangan_id})
+        dosen_ids  = list({k.dosen_id for k in kelas_list if k.dosen_id})
+ 
+        mk_map = {
+            mk.id: mk for mk in
+            db.query(Matakuliah).filter(Matakuliah.id.in_(mk_ids)).all()
+        } if mk_ids else {}
+ 
+        ruangan_map = {
+            r.id: r for r in
+            db.query(Ruangan).filter(Ruangan.id.in_(ruangan_ids)).all()
+        } if ruangan_ids else {}
+ 
+        dosen_map = {
+            u.id: u for u in
+            db.query(User).filter(User.id.in_(dosen_ids)).all()
+        } if dosen_ids else {}
+ 
+        # Cek sesi aktif per kelas hari ini
+        # (pakai matakuliah_id karena sesi_presensi FK ke matakuliah, bukan kelas)
+        sesi_aktif_mk_ids = {
+            str(s.matakuliah_id)
+            for s in db.query(SesiPresensi).filter(
+                SesiPresensi.status == SesiStatus.aktif,
+                SesiPresensi.matakuliah_id.in_(mk_ids),
+            ).all()
+        }
+ 
+        result = []
+        for k in kelas_list:
+            mk      = mk_map.get(k.matakuliah_id)
+            ruangan = ruangan_map.get(k.ruangan_id)
+            dosen   = dosen_map.get(k.dosen_id)
+ 
+            # Jam dari slot mapping
+            slot_m = SLOT_MAPPING.get(k.slot_mulai)
+            slot_s = SLOT_MAPPING.get(k.slot_selesai)
+            jam_mulai   = slot_m[0].strftime("%H:%M") if slot_m else None
+            jam_selesai = slot_s[1].strftime("%H:%M") if slot_s else None
+            jam_range   = f"{jam_mulai} – {jam_selesai}" if jam_mulai and jam_selesai else None
+ 
+            # Apakah slot ini sedang aktif sekarang?
+            is_aktif_sekarang = (
+                slot_sekarang is not None
+                and k.slot_mulai is not None
+                and k.slot_selesai is not None
+                and k.slot_mulai <= slot_sekarang <= k.slot_selesai
+            )
+ 
+            # Apakah sesi presensi sudah dibuka untuk MK ini?
+            ada_sesi_aktif = str(k.matakuliah_id) in sesi_aktif_mk_ids
+ 
+            result.append({
+                "kelas_id"        : str(k.id),
+                "kode_kelas"      : k.kode_kelas,
+                "matakuliah_id"   : str(k.matakuliah_id) if k.matakuliah_id else None,
+                "kode_mk"         : mk.kode if mk else "-",
+                "nama_mk"         : mk.nama if mk else "-",
+                "dosen_id"        : str(k.dosen_id) if k.dosen_id else None,
+                "nama_dosen"      : dosen.nama_lengkap if dosen else None,
+                "ruangan_id"      : str(k.ruangan_id) if k.ruangan_id else None,
+                "kode_ruangan"    : ruangan.kode if ruangan else None,
+                "nama_ruangan"    : ruangan.nama if ruangan else None,
+                "tipe_ruangan"    : ruangan.tipe if ruangan else None,
+                "slot_mulai"      : k.slot_mulai,
+                "slot_selesai"    : k.slot_selesai,
+                "jam_mulai"       : jam_mulai,
+                "jam_selesai"     : jam_selesai,
+                "jam_range"       : jam_range,
+                "is_aktif_sekarang": is_aktif_sekarang,
+                "ada_sesi_aktif"  : ada_sesi_aktif,
+                "izin_tamu"       : k.izin_tamu,
+            })
+ 
+        return result
+ 
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"[_get_jadwal_hari_ini] Error: {e}", exc_info=True)
+        return []
+ 
 
 # ════════════════════════════════════════════════════════════
 # FASE 4 — USER MANAGEMENT
