@@ -1135,3 +1135,271 @@ def get_ruangan_stats(db) -> dict:
         "kuliah" : kuliah,
         "seminar": seminar,
     }
+
+
+JENJANG_VALID = ["D3", "D4", "S1", "S2", "S3"]
+ 
+ 
+def _prodi_to_dict(prodi) -> dict:
+    """Serialize ProgramStudi model ke dict yang aman untuk JSON response."""
+    return {
+        "id"        : str(prodi.id),
+        "kode"      : prodi.kode,
+        "nama"      : prodi.nama,
+        "fakultas"  : prodi.fakultas,
+        "jenjang"   : prodi.jenjang,
+        "is_active" : prodi.is_active,
+        "created_at": prodi.created_at.isoformat() if prodi.created_at else None,
+        "updated_at": prodi.updated_at.isoformat() if prodi.updated_at else None,
+    }
+ 
+ 
+def list_program_studi(
+    db        ,
+    search    = None,
+    jenjang   = None,
+    aktif_only: bool = False,
+    page      : int  = 1,
+    limit     : int  = 20,
+) -> dict:
+    """
+    List program studi dengan filter, pencarian, dan pagination.
+    aktif_only=True digunakan untuk endpoint dropdown GET /program-studi/aktif.
+    """
+    from app.models.program_studi import ProgramStudi
+    from sqlalchemy import func, or_
+ 
+    query = db.query(ProgramStudi)
+ 
+    if aktif_only:
+        query = query.filter(ProgramStudi.is_active == True)
+ 
+    if jenjang and jenjang != "semua":
+        query = query.filter(ProgramStudi.jenjang == jenjang)
+ 
+    if search:
+        term = f"%{search.lower()}%"
+        query = query.filter(or_(
+            func.lower(ProgramStudi.kode).like(term),
+            func.lower(ProgramStudi.nama).like(term),
+            func.lower(ProgramStudi.fakultas).like(term),
+        ))
+ 
+    total  = query.count()
+    prodis = (
+        query
+        .order_by(ProgramStudi.kode)
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+ 
+    # Hitung jumlah mahasiswa & dosen per prodi (via program_studi_id)
+    prodi_ids = [p.id for p in prodis]
+    mhs_counts  = {}
+    dosen_counts = {}
+ 
+    if prodi_ids:
+        from app.models.user import User, UserRole
+        from sqlalchemy import func
+ 
+        mhs_rows = (
+            db.query(User.program_studi_id, func.count(User.id).label("cnt"))
+            .filter(
+                User.program_studi_id.in_(prodi_ids),
+                User.role == UserRole.mahasiswa,
+                User.is_active == True,
+            )
+            .group_by(User.program_studi_id)
+            .all()
+        )
+        mhs_counts = {str(r.program_studi_id): r.cnt for r in mhs_rows}
+ 
+        dosen_rows = (
+            db.query(User.program_studi_id, func.count(User.id).label("cnt"))
+            .filter(
+                User.program_studi_id.in_(prodi_ids),
+                User.role == UserRole.dosen,
+                User.is_active == True,
+            )
+            .group_by(User.program_studi_id)
+            .all()
+        )
+        dosen_counts = {str(r.program_studi_id): r.cnt for r in dosen_rows}
+ 
+    items = []
+    for p in prodis:
+        d = _prodi_to_dict(p)
+        d["jumlah_mahasiswa"] = mhs_counts.get(str(p.id), 0)
+        d["jumlah_dosen"]     = dosen_counts.get(str(p.id), 0)
+        items.append(d)
+ 
+    return {
+        "items"      : items,
+        "total"      : total,
+        "page"       : page,
+        "limit"      : limit,
+        "total_pages": max(1, (total + limit - 1) // limit),
+    }
+ 
+ 
+def create_program_studi(db, req) -> tuple:
+    """
+    Buat program studi baru.
+    Return: (success, pesan, prodi_dict | None)
+    """
+    from app.models.program_studi import ProgramStudi
+ 
+    kode_baru = req.kode.strip().upper()
+ 
+    # Cek duplikat kode
+    if db.query(ProgramStudi).filter(ProgramStudi.kode == kode_baru).first():
+        return False, f"Kode program studi '{kode_baru}' sudah digunakan", None
+ 
+    # Validasi jenjang
+    if req.jenjang and req.jenjang not in JENJANG_VALID:
+        return False, f"Jenjang tidak valid. Pilih dari: {', '.join(JENJANG_VALID)}", None
+ 
+    prodi = ProgramStudi(
+        kode     = kode_baru,
+        nama     = req.nama.strip(),
+        fakultas = req.fakultas.strip() if req.fakultas else None,
+        jenjang  = req.jenjang or None,
+        is_active= True,
+    )
+    db.add(prodi)
+    db.commit()
+    db.refresh(prodi)
+ 
+    d = _prodi_to_dict(prodi)
+    d["jumlah_mahasiswa"] = 0
+    d["jumlah_dosen"]     = 0
+    return True, f"Program studi {prodi.kode} ({prodi.nama}) berhasil dibuat", d
+ 
+ 
+def update_program_studi(db, prodi_id, req) -> tuple:
+    """
+    Update data program studi (semua field opsional — partial update).
+    Return: (success, pesan, prodi_dict | None)
+    """
+    from app.models.program_studi import ProgramStudi
+ 
+    prodi = db.query(ProgramStudi).filter(ProgramStudi.id == prodi_id).first()
+    if not prodi:
+        return False, "Program studi tidak ditemukan", None
+ 
+    # Validasi jenjang jika dikirim
+    if req.jenjang is not None and req.jenjang and req.jenjang not in JENJANG_VALID:
+        return False, f"Jenjang tidak valid. Pilih dari: {', '.join(JENJANG_VALID)}", None
+ 
+    # Validasi kode unik jika berubah
+    if req.kode is not None:
+        kode_baru = req.kode.strip().upper()
+        if kode_baru != prodi.kode:
+            existing = db.query(ProgramStudi).filter(
+                ProgramStudi.kode == kode_baru,
+                ProgramStudi.id   != prodi_id,
+            ).first()
+            if existing:
+                return False, f"Kode '{kode_baru}' sudah digunakan program studi lain", None
+        prodi.kode = kode_baru
+ 
+    if req.nama     is not None: prodi.nama     = req.nama.strip()
+    if req.fakultas is not None: prodi.fakultas = req.fakultas.strip() if req.fakultas else None
+    if req.jenjang  is not None: prodi.jenjang  = req.jenjang or None
+    if req.is_active is not None: prodi.is_active = req.is_active
+ 
+    db.commit()
+    db.refresh(prodi)
+ 
+    d = _prodi_to_dict(prodi)
+    # Hitung ulang jumlah user
+    from app.models.user import User, UserRole
+    from sqlalchemy import func
+    d["jumlah_mahasiswa"] = db.query(func.count(User.id)).filter(
+        User.program_studi_id == prodi_id,
+        User.role == UserRole.mahasiswa,
+        User.is_active == True,
+    ).scalar() or 0
+    d["jumlah_dosen"] = db.query(func.count(User.id)).filter(
+        User.program_studi_id == prodi_id,
+        User.role == UserRole.dosen,
+        User.is_active == True,
+    ).scalar() or 0
+ 
+    return True, f"Program studi {prodi.kode} berhasil diperbarui", d
+ 
+ 
+def delete_program_studi(db, prodi_id) -> tuple:
+    """
+    Hapus program studi.
+    Cek apakah masih ada mahasiswa/dosen terdaftar (via program_studi_id) sebelum hapus.
+    Return: (success, pesan)
+    """
+    from app.models.program_studi import ProgramStudi
+    from app.models.user import User
+    from sqlalchemy import func
+ 
+    prodi = db.query(ProgramStudi).filter(ProgramStudi.id == prodi_id).first()
+    if not prodi:
+        return False, "Program studi tidak ditemukan"
+ 
+    # Cek apakah masih ada user yang terhubung via FK
+    total_user = db.query(func.count(User.id)).filter(
+        User.program_studi_id == prodi_id,
+        User.is_active == True,
+    ).scalar() or 0
+ 
+    if total_user > 0:
+        return False, (
+            f"Program studi {prodi.kode} masih memiliki {total_user} mahasiswa/dosen aktif. "
+            "Pindahkan atau nonaktifkan mereka terlebih dahulu sebelum menghapus program studi."
+        )
+ 
+    nama = f"{prodi.kode} ({prodi.nama})"
+    db.delete(prodi)
+    db.commit()
+    return True, f"Program studi {nama} berhasil dihapus"
+ 
+ 
+def toggle_program_studi(db, prodi_id, is_active: bool) -> tuple:
+    """
+    Toggle status aktif program studi tanpa membuka modal.
+    Return: (success, pesan, prodi_dict | None)
+    """
+    from app.models.program_studi import ProgramStudi
+ 
+    prodi = db.query(ProgramStudi).filter(ProgramStudi.id == prodi_id).first()
+    if not prodi:
+        return False, "Program studi tidak ditemukan", None
+ 
+    prodi.is_active = is_active
+    db.commit()
+    db.refresh(prodi)
+ 
+    status = "diaktifkan" if is_active else "dinonaktifkan"
+    d = _prodi_to_dict(prodi)
+    d["jumlah_mahasiswa"] = 0
+    d["jumlah_dosen"]     = 0
+    return True, f"Program studi {prodi.kode} berhasil {status}", d
+ 
+ 
+def get_program_studi_stats(db) -> dict:
+    """Hitung statistik program studi untuk stat strip di halaman ProgramStudi.tsx."""
+    from app.models.program_studi import ProgramStudi
+    from sqlalchemy import func
+ 
+    total  = db.query(ProgramStudi).count()
+    aktif  = db.query(ProgramStudi).filter(ProgramStudi.is_active == True).count()
+    s1     = db.query(ProgramStudi).filter(ProgramStudi.jenjang == "S1").count()
+    d3     = db.query(ProgramStudi).filter(ProgramStudi.jenjang == "D3").count()
+    d4     = db.query(ProgramStudi).filter(ProgramStudi.jenjang == "D4").count()
+ 
+    return {
+        "total" : total,
+        "aktif" : aktif,
+        "s1"    : s1,
+        "d3"    : d3,
+        "d4"    : d4,
+    }
+ 
