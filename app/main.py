@@ -1,5 +1,6 @@
 """
-app/main.py — Update Fase 11
+app/main.py — Update Fase D
+Tambah router admin_program_studi untuk endpoint CRUD Program Studi.
 """
 from contextlib import asynccontextmanager
 import logging
@@ -9,8 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
     auth, face, sesi, presensi,
-    matakuliah, mahasiswa, jadwal, dosen, admin, admin_import, admin_laporan, admin_audit,admin_ruangan, admin_kelas, admin_import_jadwal
+    matakuliah, mahasiswa, jadwal, dosen, admin,
+    admin_import, admin_laporan, admin_audit,
+    admin_ruangan, admin_kelas, admin_import_jadwal,
 )
+from app.routers.admin_program_studi import router as admin_program_studi_router  # ← Fase D
 from app.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -27,8 +31,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "Presensi Face Recognition API",
-    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase 11.",
-    version     = "3.2.0",
+    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase D.",
+    version     = "3.3.0",
     lifespan    = lifespan,
 )
 
@@ -56,11 +60,13 @@ app.include_router(admin_audit.router)
 app.include_router(admin_ruangan.router)
 app.include_router(admin_kelas.router)
 app.include_router(admin_import_jadwal.router)
+app.include_router(admin_program_studi_router)   # ← Fase D
+
 
 @app.get("/", tags=["Health Check"])
 def root():
     return {
-        "message": "Backend Presensi v3.2 berjalan!",
+        "message": "Backend Presensi v3.3 berjalan!",
         "status" : "ok",
     }
 

@@ -1,7 +1,7 @@
 import uuid
 import enum
 
-from sqlalchemy import Column, String, Boolean, Enum, DateTime
+from sqlalchemy import Column, String, Boolean, Enum, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -26,7 +26,24 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
 
     role = Column(Enum(UserRole), nullable=False)
+
+    # ── Program Studi ─────────────────────────────────────────
+    # Field string lama — tetap dipertahankan untuk backward compat
     program_studi = Column(String(100), nullable=False)
+
+    # FK terstruktur ke tabel program_studi (Fase D)
+    # nullable=True agar row lama (sebelum Fase D) tetap valid
+    program_studi_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("program_studi.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "FK ke program_studi.id. NULL = enrollment lama sebelum Fase D "
+            "atau prodi belum ada di tabel program_studi. "
+            "Field string program_studi tetap dipertahankan untuk backward compat."
+        ),
+    )
 
     is_face_registered = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
@@ -36,9 +53,16 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # RELATIONSHIP
+    # ── Relationships ─────────────────────────────────────────
     face_embeddings = relationship(
         "FaceEmbedding",
         back_populates="user",
-        cascade="all, delete"
+        cascade="all, delete",
+    )
+
+    # Relasi ke ProgramStudi (Fase D)
+    prodi = relationship(
+        "ProgramStudi",
+        foreign_keys=[program_studi_id],
+        lazy="select",
     )
