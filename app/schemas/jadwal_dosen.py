@@ -19,6 +19,10 @@ from uuid import UUID
 from datetime import datetime
 
 
+# ── Konstanta urutan hari ─────────────────────────────────────
+HARI_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+
+
 # ── Sub-schema: Info jadwal pengganti ────────────────────────
 
 class JadwalPenggantiInfoItem(BaseModel):
@@ -108,38 +112,9 @@ class JadwalMingguanDosenItem(BaseModel):
 
     class Config:
         from_attributes = True
-        json_schema_extra = {
-            "example": {
-                "kelas_id"       : "uuid-kelas",
-                "kode_kelas"     : "A",
-                "matakuliah_id"  : "uuid-mk",
-                "matakuliah_kode": "TIF3232209",
-                "matakuliah_nama": "Pemrograman Mobile",
-                "sks"            : 3,
-                "hari"           : "Senin",
-                "slot_mulai"     : 7,
-                "slot_selesai"   : 9,
-                "jam_mulai"      : "13:00",
-                "jam_selesai"    : "15:30",
-                "jam_range"      : "13:00 – 15:30",
-                "kode_ruangan"   : "LABMOBILE",
-                "nama_ruangan"   : "Lab Mobile Computing",
-                "jumlah_mahasiswa": 15,
-                "jumlah_tamu"    : 1,
-                "status_sesi"    : "belum_dibuka",
-                "sesi_id"        : None,
-                "pertemuan_ke_berikutnya": 10,
-                "ada_jadwal_pengganti": False,
-                "jadwal_pengganti": None,
-                "izin_tamu"      : True,
-            }
-        }
 
 
 # ── Response wrapper: jadwal dikelompokkan per hari ──────────
-
-HARI_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-
 
 class JadwalMingguanDosenResponse(BaseModel):
     """
@@ -175,10 +150,10 @@ class JadwalMingguanDosenResponse(BaseModel):
                 "total_kelas"     : 4,
                 "total_sesi_aktif": 1,
                 "jadwal_per_hari" : {
-                    "Senin"  : ["... list JadwalMingguanDosenItem ..."],
+                    "Senin"  : [],
                     "Selasa" : [],
                     "Rabu"   : [],
-                    "Kamis"  : ["... list JadwalMingguanDosenItem ..."],
+                    "Kamis"  : [],
                     "Jumat"  : [],
                     "Sabtu"  : [],
                     "Minggu" : [],
