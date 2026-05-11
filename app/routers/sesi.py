@@ -1,20 +1,9 @@
 """
 app/routers/sesi.py
 ════════════════════
-Fase 3.6 — Perbaikan GET /sesi/{sesi_id}/peserta:
-- Query bulk (tidak loop per peserta)
-- Return is_tamu dan kelas_asal dengan benar
-- Tambah field nim dan nama yang sebelumnya kadang kosong
-
-Tambahan: GET /sesi/riwayat-dosen
-- List semua sesi yang pernah dibuat dosen
-- Dengan ringkasan statistik kehadiran per sesi
-- Dipakai oleh tab Rekap di MainDosenScreen (RekapListScreen)
-
-Fase B-2 (BARU): GET /sesi/aktif-mahasiswa
-- Response lengkap dengan matakuliah, kelas, dosen, ruangan, koordinat
-- Auto-detect mode berdasarkan jadwal mahasiswa hari ini
-- Tidak pernah return 404 — selalu 200 dengan ada_sesi flag
+Fase 3.6 — Perbaikan GET /sesi/{sesi_id}/peserta
+Fase B-2  — GET /sesi/aktif-mahasiswa (response lengkap, auto-detect mode)
+Fase B-3  — GET /sesi/aktif-tamu (list sesi untuk TamuSesiListScreen Flutter)
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,10 +17,13 @@ from app.models.sesi import SesiPresensi, SesiStatus, SesiMode
 from app.models.presensi import Presensi, PresensiStatus
 from app.schemas.sesi import BukaSesiRequest, SesiResponse, ExtendKodeRequest
 
-# ── Fase B-2: import schema dan service baru ──────────────────
+# ── Fase B-2 ──────────────────────────────────────────────────
 from app.schemas.sesi_aktif import SesiAktifWrapper
 from app.services.sesi_aktif_service import get_sesi_aktif_mahasiswa_detail
-# ─────────────────────────────────────────────────────────────
+
+# ── Fase B-3 ──────────────────────────────────────────────────
+from app.schemas.sesi_tamu import SesiTamuListResponse
+from app.services.sesi_tamu_service import get_sesi_aktif_tamu
 
 from app.services import sesi_service
 from app.routers.auth import get_current_user
@@ -172,8 +164,6 @@ def get_riwayat_sesi_dosen(
     """
     Ambil semua riwayat sesi yang pernah dibuat dosen yang sedang login.
     Diurutkan dari yang terbaru.
-
-    Dipakai oleh tab Rekap di MainDosenScreen (RekapListScreen).
     """
     from collections import defaultdict
 
@@ -269,6 +259,44 @@ def cek_kode_sesi(
     }
 
 
+# ─── GET /sesi/aktif-tamu ─────────────────────────────────────
+# FASE B-3: Route statis — HARUS sebelum GET /sesi/aktif dan GET /sesi/aktif-mahasiswa
+# agar tidak ditangkap sebagai path parameter {sesi_id}
+
+@router.get("/aktif-tamu", response_model=SesiTamuListResponse)
+def get_sesi_aktif_untuk_tamu(
+    current_user: User    = Depends(get_current_user),
+    db          : Session = Depends(get_db),
+):
+    """
+    Fase B-3 — List sesi aktif yang bisa diikuti mahasiswa sebagai tamu.
+
+    Dipakai TamuSesiListScreen Flutter v2.1.0.
+    Dipanggil saat mahasiswa tap 'Ikut sebagai Tamu' di ScanScreen
+    (ketika tidak ada jadwal aktif untuk mahasiswa tersebut).
+
+    Sesi muncul di list jika memenuhi SALAH SATU syarat:
+    - Dosen sudah daftarkan mahasiswa ini secara manual (is_tamu=True)
+    - Kelas memiliki izin_tamu=True (siapapun boleh masuk)
+
+    Sesi TIDAK muncul jika:
+    - Mahasiswa sudah enrolled sebagai mahasiswa ASLI di MK tersebut
+      → gunakan alur presensi normal via GET /sesi/aktif-mahasiswa
+    - Mahasiswa sudah punya record presensi di sesi ini
+
+    Selalu return HTTP 200. Dosen/admin mendapat list kosong.
+
+    izin_tamu_source per item:
+    - 'manual' → didaftarkan dosen (tampil lebih atas)
+    - 'auto'   → kelas buka izin tamu
+    """
+    # Dosen/admin tidak menggunakan alur tamu
+    if current_user.role != UserRole.mahasiswa:
+        return SesiTamuListResponse(sesi_list=[], total=0, pesan=None)
+
+    return get_sesi_aktif_tamu(db, current_user.id)
+
+
 # ─── GET /sesi/aktif ──────────────────────────────────────────
 # Endpoint lama — tetap ada untuk kompatibilitas
 
@@ -313,24 +341,6 @@ def get_sesi_aktif_mahasiswa(
 
     Dipakai Flutter SesiDetectService untuk auto-detect mode presensi.
     Tidak ada lagi pilihan mode manual — sistem yang menentukan.
-
-    Response format:
-    ```json
-    {
-      "ada_sesi": true,
-      "sesi": {
-        "sesi_id": "...",
-        "mode": "offline",
-        "matakuliah_nama": "Pemrograman Mobile",
-        "kode_kelas": "A",
-        "dosen_nama": "Dr. Budi Santoso",
-        "ruangan": "Lab Mobile Computing",
-        "koordinat_lat": -5.131380,
-        "koordinat_lng": 119.490840,
-        ...
-      }
-    }
-    ```
 
     Flutter logic berdasarkan response:
     - ada_sesi=false             → tampil tombol 'Ikut sebagai Tamu'
