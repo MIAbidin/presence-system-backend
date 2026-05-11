@@ -1,5 +1,5 @@
 # app/main.py
-# Update Fase E: daftarkan superadmin router, bump versi ke v3.4.0
+# Update v3.5.0: Fase B selesai — jadwal mingguan dosen, sesi aktif tamu, sesi aktif mahasiswa
 from contextlib import asynccontextmanager
 import logging
 
@@ -13,7 +13,7 @@ from app.routers import (
     admin_ruangan, admin_kelas, admin_import_jadwal,
 )
 from app.routers.admin_program_studi import router as admin_program_studi_router
-from app.routers.superadmin import router as superadmin_router   # ← Fase E
+from app.routers.superadmin import router as superadmin_router
 from app.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "Presensi Face Recognition API",
-    description = "Backend aplikasi presensi mahasiswa berbasis wajah. Fase E (Super Admin).",
-    version     = "3.4.0",
+    description = (
+        "Backend aplikasi presensi mahasiswa berbasis wajah. "
+        "v3.5.0 — Fase B selesai: jadwal mingguan dosen, sesi aktif tamu (TamuSesiListScreen), "
+        "sesi aktif mahasiswa auto-detect, field mode di jadwal pengganti."
+    ),
+    version     = "3.5.0",
     lifespan    = lifespan,
 )
 
@@ -60,14 +64,15 @@ app.include_router(admin_ruangan.router)
 app.include_router(admin_kelas.router)
 app.include_router(admin_import_jadwal.router)
 app.include_router(admin_program_studi_router)
-app.include_router(superadmin_router)   # ← Fase E
+app.include_router(superadmin_router)
 
 
 @app.get("/", tags=["Health Check"])
 def root():
     return {
-        "message": "Backend Presensi v3.4 berjalan!",
+        "message": "Backend Presensi v3.5 berjalan!",
         "status" : "ok",
+        "fase"   : "B selesai — jadwal mingguan dosen, sesi tamu, auto-detect sesi",
     }
 
 
@@ -86,6 +91,7 @@ def health():
     ] if scheduler.running else []
     return {
         "status"   : "ok",
+        "version"  : "3.5.0",
         "scheduler": "running" if scheduler.running else "stopped",
         "jobs"     : jobs,
     }

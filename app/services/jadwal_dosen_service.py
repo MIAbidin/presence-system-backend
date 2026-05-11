@@ -18,10 +18,15 @@ dengan dosen yang login. Setiap kelas diperkaya dengan:
 - Status sesi hari ini (aktif/selesai/belum_dibuka)
 - Info jadwal pengganti jika ada untuk pertemuan berikutnya
 
+Fix v3.5.0:
+- enrolled count query tidak lagi menggunakan dialect-specific cast;
+  diganti dengan dua query terpisah (total dan tamu) yang portable
+  di semua database backend.
+
 Query strategy (menghindari N+1):
 1. Satu query kelas_matakuliah WHERE dosen_id = current_dosen
 2. Bulk load matakuliah, ruangan dalam satu query masing-masing
-3. Bulk load enrolled count per kelas (GROUP BY kelas_id)
+3. Bulk load enrolled count per kelas (dua query GROUP BY)
 4. Bulk load sesi aktif + sesi selesai hari ini
 5. Bulk load jadwal_pengganti untuk pertemuan berikutnya
 6. Proses pengelompokan di Python — tidak ada loop query
@@ -60,7 +65,10 @@ WEEKDAY_TO_HARI = {
 }
 
 
-def _fmt_slot_jam(slot_mulai: Optional[int], slot_selesai: Optional[int]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+def _fmt_slot_jam(
+    slot_mulai  : Optional[int],
+    slot_selesai: Optional[int],
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Konversi slot_mulai dan slot_selesai ke string jam.
     Return: (jam_mulai_str, jam_selesai_str, jam_range_str)
@@ -89,23 +97,6 @@ def _fmt_time(t) -> Optional[str]:
     if hasattr(t, "strftime"):
         return t.strftime("%H:%M")
     return str(t)[:5]
-
-
-def _hitung_pertemuan_berikutnya(db: Session, kelas: KelasMatakuliah) -> int:
-    """
-    Hitung nomor pertemuan berikutnya untuk kelas ini.
-    Berdasarkan jumlah sesi selesai yang sudah ada untuk MK ini.
-    Minimal 1.
-    """
-    jumlah_selesai = (
-        db.query(func.count(SesiPresensi.id))
-        .filter(
-            SesiPresensi.matakuliah_id == kelas.matakuliah_id,
-            SesiPresensi.status        == SesiStatus.selesai,
-        )
-        .scalar()
-    ) or 0
-    return jumlah_selesai + 1
 
 
 def get_jadwal_mingguan_dosen(
@@ -191,31 +182,50 @@ def _get_jadwal_mingguan_impl(
             db.query(Ruangan).filter(Ruangan.id.in_(ruangan_ids)).all()
         }
 
-    # 2c. Enrolled count per kelas (asli + tamu)
-    enrolled_rows = (
+    # 2c. Enrolled count per kelas.
+    # PERBAIKAN: gunakan dua query GROUP BY terpisah (total dan tamu)
+    # agar tidak bergantung pada dialect-specific CAST (PostgreSQL vs SQLite).
+    # Query total: semua enrollment per kelas
+    total_rows = (
         db.query(
             MahasiswaMatakuliah.kelas_id,
             func.count(MahasiswaMatakuliah.id).label("total"),
-            func.sum(
-                func.cast(MahasiswaMatakuliah.is_tamu, db.bind.dialect.type_descriptor(
-                    __import__('sqlalchemy', fromlist=['Integer']).Integer()
-                ))
-            ).label("tamu"),
         )
         .filter(MahasiswaMatakuliah.kelas_id.in_(kelas_ids))
         .group_by(MahasiswaMatakuliah.kelas_id)
         .all()
     )
+    total_map: dict = {str(r.kelas_id): r.total for r in total_rows}
+
+    # Query tamu: hanya is_tamu=True
+    tamu_rows = (
+        db.query(
+            MahasiswaMatakuliah.kelas_id,
+            func.count(MahasiswaMatakuliah.id).label("tamu"),
+        )
+        .filter(
+            MahasiswaMatakuliah.kelas_id.in_(kelas_ids),
+            MahasiswaMatakuliah.is_tamu == True,  # noqa: E712
+        )
+        .group_by(MahasiswaMatakuliah.kelas_id)
+        .all()
+    )
+    tamu_map: dict = {str(r.kelas_id): r.tamu for r in tamu_rows}
+
+    # Gabungkan ke enrolled_map
     enrolled_map: dict = {
-        str(r.kelas_id): {"total": r.total or 0, "tamu": r.tamu or 0}
-        for r in enrolled_rows
+        kelas_id_str: {
+            "total": total_map.get(kelas_id_str, 0),
+            "tamu" : tamu_map.get(kelas_id_str, 0),
+        }
+        for kelas_id_str in {str(k.id) for k in kelas_list}
     }
 
     # 2d. Sesi aktif hari ini (untuk status sesi)
     today_start = datetime.combine(date.today(), datetime.min.time())
     today_end   = today_start + timedelta(days=1)
 
-    # Sesi yang sedang aktif — by matakuliah_id
+    # Sesi yang sedang aktif — by matakuliah_id (satu MK max 1 sesi aktif)
     sesi_aktif_map: dict = {}
     for s in (
         db.query(SesiPresensi)
@@ -225,7 +235,6 @@ def _get_jadwal_mingguan_impl(
         )
         .all()
     ):
-        # Satu MK bisa punya max 1 sesi aktif
         sesi_aktif_map[s.matakuliah_id] = s
 
     # Sesi yang selesai hari ini — ambil yang terbaru per MK
@@ -261,10 +270,12 @@ def _get_jadwal_mingguan_impl(
         r.matakuliah_id: r.selesai + 1
         for r in pertemuan_count_rows
     }
+    # Untuk MK yang belum pernah ada sesi selesai, pertemuan_ke = 1
+    for k in kelas_list:
+        if k.matakuliah_id not in pertemuan_map:
+            pertemuan_map[k.matakuliah_id] = 1
 
-    # 2f. Jadwal pengganti untuk pertemuan berikutnya
-    # Ambil semua jadwal pengganti untuk MK yang diampu dosen ini
-    pertemuan_targets = list(pertemuan_map.values())
+    # 2f. Jadwal pengganti yang dibuat dosen ini — untuk semua MK
     jp_list: list = []
     if mk_ids:
         jp_list = (
@@ -306,18 +317,16 @@ def _get_jadwal_mingguan_impl(
         # Enrolled count
         enrolled_info = enrolled_map.get(str(kelas.id), {"total": 0, "tamu": 0})
 
-        # Status sesi hari ini
-        status_sesi: Optional[str] = None
-        sesi_id    : Optional[UUID] = None
+        # Status sesi: hanya relevan jika kelas hari ini
+        status_sesi : Optional[str]  = None
+        sesi_id     : Optional[UUID] = None
 
         if kelas.hari == hari_ini:
-            # Cek sesi aktif
             sesi_aktif = sesi_aktif_map.get(kelas.matakuliah_id)
             if sesi_aktif:
                 status_sesi = "aktif"
                 sesi_id     = sesi_aktif.id
             else:
-                # Cek sesi selesai hari ini
                 sesi_selesai = sesi_selesai_hari_ini_map.get(kelas.matakuliah_id)
                 if sesi_selesai:
                     status_sesi = "selesai"
@@ -329,18 +338,20 @@ def _get_jadwal_mingguan_impl(
         pertemuan_ke_berikutnya = pertemuan_map.get(kelas.matakuliah_id, 1)
 
         # Jadwal pengganti untuk pertemuan berikutnya
-        ada_jp       = False
-        jp_info      = None
-        jp_obj = jp_map.get((kelas.matakuliah_id, pertemuan_ke_berikutnya))
+        ada_jp  = False
+        jp_info = None
+        jp_obj  = jp_map.get((kelas.matakuliah_id, pertemuan_ke_berikutnya))
         if jp_obj:
             ada_jp  = True
+            # Ambil field mode dengan aman (nullable — Fase B-1)
+            mode_jp = getattr(jp_obj, "mode", None)
             jp_info = JadwalPenggantiInfoItem(
                 jp_id            = jp_obj.id,
                 pertemuan_ke     = jp_obj.pertemuan_ke,
                 jam_mulai_baru   = _fmt_time(jp_obj.jam_mulai_baru),
                 jam_selesai_baru = _fmt_time(jp_obj.jam_selesai_baru),
                 ruangan_baru     = jp_obj.ruangan_baru,
-                mode             = jp_obj.mode if hasattr(jp_obj, 'mode') else None,
+                mode             = mode_jp,
                 keterangan       = jp_obj.keterangan,
             )
 
@@ -357,9 +368,9 @@ def _get_jadwal_mingguan_impl(
             jam_mulai        = jam_mulai,
             jam_selesai      = jam_selesai,
             jam_range        = jam_range,
-            ruangan_id       = ruangan.id           if ruangan else None,
-            kode_ruangan     = ruangan.kode         if ruangan else None,
-            nama_ruangan     = ruangan.nama         if ruangan else None,
+            ruangan_id       = ruangan.id            if ruangan else None,
+            kode_ruangan     = ruangan.kode          if ruangan else None,
+            nama_ruangan     = ruangan.nama          if ruangan else None,
             koordinat_lat    = ruangan.koordinat_lat if ruangan else None,
             koordinat_lng    = ruangan.koordinat_lng if ruangan else None,
             jumlah_mahasiswa = enrolled_info["total"],

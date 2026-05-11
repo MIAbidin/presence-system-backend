@@ -12,6 +12,10 @@ Fase 3 — Endpoint khusus dosen:
   3.5b GET   /dosen/matakuliah/{mk_id}/jadwal-pengganti — list jadwal pengganti
   3.5c DELETE /dosen/matakuliah/{mk_id}/jadwal-pengganti/{pertemuan_ke} — hapus
 
+Fase B-4:
+  GET  /dosen/jadwal/mingguan — jadwal mingguan dosen (Tab Hari Ini + Tab Mingguan)
+                                Dipanggil JadwalDosenScreen Flutter v2.1.0
+
 Semua endpoint wajib autentikasi JWT dengan role dosen.
 """
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,7 +30,9 @@ from app.schemas.jadwal_pengganti import (
     IzinTamuRequest,
     TambahTamuRequest,
 )
+from app.schemas.jadwal_dosen import JadwalMingguanDosenResponse
 from app.services import dosen_service
+from app.services.jadwal_dosen_service import get_jadwal_mingguan_dosen
 
 router = APIRouter(prefix="/dosen", tags=["Dosen"])
 
@@ -58,6 +64,35 @@ def get_beranda(
     """
     data = dosen_service.get_beranda_dosen(db, dosen)
     return data
+
+
+# ─── B-4 — GET /dosen/jadwal/mingguan ────────────────────────
+
+@router.get("/jadwal/mingguan", response_model=JadwalMingguanDosenResponse)
+def get_jadwal_mingguan(
+    dosen: User    = Depends(require_dosen),
+    db   : Session = Depends(get_db),
+):
+    """
+    Fase B-4 — Jadwal mingguan dosen: semua kelas yang diampu,
+    dikelompokkan per hari (Senin–Minggu).
+
+    Dipakai JadwalDosenScreen Flutter v2.1.0:
+    - Tab Hari Ini  → filter jadwal_per_hari[hari_ini] dari response
+    - Tab Mingguan  → tampilkan semua hari (accordion/section per hari)
+
+    Setiap item kelas dilengkapi:
+    - Nama MK + kode kelas (A/B/C)
+    - Slot waktu → jam nyata (07:00 – 09:30)
+    - Info ruangan (nama, koordinat GPS)
+    - Jumlah mahasiswa enrolled (asli + tamu)
+    - Status sesi hari ini (aktif / selesai / belum_dibuka / null)
+    - Info jadwal pengganti untuk pertemuan berikutnya (termasuk mode Fase B-1)
+    - Tombol buka sesi langsung dari kartu (via sesi_id / kelas_id)
+
+    Selalu HTTP 200 — list kosong per hari jika tidak ada jadwal.
+    """
+    return get_jadwal_mingguan_dosen(db, dosen)
 
 
 # ─── 3.2 — GET /dosen/matakuliah/{mk_id} ─────────────────────
@@ -169,22 +204,22 @@ def hapus_tamu(
 def simpan_jadwal_pengganti(
     mk_id: UUID,
     req  : JadwalPenggantiRequest,
-    dosen: User    = Depends(lambda: None),   # placeholder — gunakan Depends asli di router
+    dosen: User    = Depends(require_dosen),   # FIX: was Depends(lambda: None)
     db   : Session = Depends(get_db),
 ):
     """
     Simpan jadwal pengganti untuk satu pertemuan tertentu.
- 
+
     Kalau untuk pertemuan_ke yang sama sudah ada → otomatis UPDATE.
     Kalau belum ada → INSERT baru.
- 
+
     Update Fase B-1:
     - Field mode (Optional: 'offline' | 'online' | null) ditambahkan
     - null/kosong = mode tidak berubah dari jadwal reguler kelas
     - 'online' = pertemuan ini berubah ke online meski jadwal reguler offline
     - 'offline' = pertemuan ini berubah ke tatap muka meski jadwal reguler online
     - Validasi: jam_selesai_baru harus lebih besar dari jam_mulai_baru (divalidasi di schema)
- 
+
     Minimal satu kolom perubahan harus diisi (jam, ruangan, mode, atau keterangan).
     """
     # Validasi: minimal satu perubahan diisi (termasuk mode sekarang)
@@ -194,7 +229,7 @@ def simpan_jadwal_pengganti(
             status_code=400,
             detail="Minimal satu perubahan harus diisi (jam, ruangan, mode, atau keterangan)"
         )
- 
+
     success, pesan, data = dosen_service.simpan_jadwal_pengganti(
         db               = db,
         dosen            = dosen,
@@ -204,11 +239,12 @@ def simpan_jadwal_pengganti(
         jam_selesai_baru = req.jam_selesai_baru,
         ruangan_baru     = req.ruangan_baru,
         keterangan       = req.keterangan,
-        mode             = req.mode,           # ← Fase B-1: teruskan ke service
+        mode             = req.mode,
     )
     if not success:
         raise HTTPException(status_code=400, detail=pesan)
     return {"message": pesan, "data": data}
+
 
 # ─── 3.5b — GET /dosen/matakuliah/{mk_id}/jadwal-pengganti ───
 
