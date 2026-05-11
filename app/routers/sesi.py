@@ -4,6 +4,8 @@ app/routers/sesi.py
 Fase 3.6 — Perbaikan GET /sesi/{sesi_id}/peserta
 Fase B-2  — GET /sesi/aktif-mahasiswa (response lengkap, auto-detect mode)
 Fase B-3  — GET /sesi/aktif-tamu (list sesi untuk TamuSesiListScreen Flutter)
+Fase B-6  — POST /sesi/buka: kirim notifikasi ke mahasiswa TANPA kode_sesi di payload FCM.
+             Kode hanya dibagikan dosen manual via WhatsApp/Zoom.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -56,6 +58,11 @@ def buka_sesi(
 
     Fase 2.3: batas_terlambat_menit=None → tidak ada batas terlambat,
     semua presensi selama sesi aktif = Hadir.
+
+    Fase B-6: Setelah sesi berhasil dibuat, kirim push notification ke semua
+    mahasiswa terdaftar di matakuliah ini. Payload FCM TIDAK menyertakan
+    kode_sesi — kode hanya dibagikan dosen secara manual via WhatsApp/Zoom
+    agar hanya mahasiswa yang aktif di sesi yang bisa presensi online.
     """
     try:
         sesi = sesi_service.buka_sesi(
@@ -70,6 +77,11 @@ def buka_sesi(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # ── Fase B-6: Kirim notifikasi ke mahasiswa (background, non-blocking) ──
+    # Dilakukan setelah commit agar sesi sudah benar-benar tersimpan.
+    # Error notifikasi tidak menggagalkan response buka sesi.
+    _kirim_notifikasi_sesi_dibuka_background(db, sesi)
 
     detik = sesi_service.hitung_detik_tersisa(sesi)
     return SesiResponse(
@@ -86,6 +98,93 @@ def buka_sesi(
             if sesi.batas_terlambat else None
         ),
     )
+
+
+def _kirim_notifikasi_sesi_dibuka_background(
+    db  : Session,
+    sesi: SesiPresensi,
+) -> None:
+    """
+    Fase B-6 — Kirim notifikasi ke semua mahasiswa terdaftar di matakuliah sesi.
+
+    Dipisah ke fungsi sendiri agar:
+    1. Mudah diuji secara terpisah
+    2. Error tidak membatalkan response buka_sesi
+    3. Logging terpusat
+
+    Payload FCM yang dikirim ke mahasiswa:
+    - type: 'sesi_dibuka'
+    - mode: 'offline' | 'online'
+    - pertemuan_ke: angka pertemuan
+    - nama_matakuliah: nama MK
+    TIDAK ada kode_sesi (Fase B-6).
+    """
+    try:
+        from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
+        from app.models.user import User as UserModel
+        from app.models.matakuliah import Matakuliah
+        from app.services.notification_service import kirim_notifikasi_sesi_dibuka
+
+        # Ambil nama matakuliah
+        mk = db.query(Matakuliah).filter(
+            Matakuliah.id == sesi.matakuliah_id
+        ).first()
+        nama_mk = mk.nama if mk else "Matakuliah"
+
+        # Ambil FCM token semua mahasiswa yang enrolled di MK ini
+        rows = (
+            db.query(MahasiswaMatakuliah)
+            .filter(MahasiswaMatakuliah.matakuliah_id == sesi.matakuliah_id)
+            .all()
+        )
+        mhs_ids = [r.mahasiswa_id for r in rows]
+        if not mhs_ids:
+            import logging
+            logging.getLogger(__name__).debug(
+                f"Tidak ada mahasiswa terdaftar di MK {sesi.matakuliah_id}, "
+                "skip notifikasi."
+            )
+            return
+
+        # Ambil FCM token yang tidak null
+        users = (
+            db.query(UserModel)
+            .filter(
+                UserModel.id.in_(mhs_ids),
+                UserModel.fcm_token.isnot(None),
+                UserModel.is_active == True,
+            )
+            .all()
+        )
+        device_tokens = [u.fcm_token for u in users if u.fcm_token]
+
+        if not device_tokens:
+            import logging
+            logging.getLogger(__name__).debug(
+                f"Tidak ada FCM token terdaftar untuk MK {sesi.matakuliah_id}."
+            )
+            return
+
+        # Fase B-6: kirim_notifikasi_sesi_dibuka sudah tidak menyertakan kode_sesi
+        terkirim = kirim_notifikasi_sesi_dibuka(
+            device_tokens   = device_tokens,
+            nama_matakuliah = nama_mk,
+            mode            = sesi.mode.value,
+            pertemuan_ke    = sesi.pertemuan_ke,
+        )
+
+        import logging
+        logging.getLogger(__name__).info(
+            f"[Fase B-6] Notifikasi sesi dibuka: {terkirim}/{len(device_tokens)} "
+            f"terkirim ke mahasiswa MK {nama_mk} (pertemuan {sesi.pertemuan_ke}, "
+            f"mode {sesi.mode.value}). Kode TIDAK disertakan di payload."
+        )
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[Fase B-6] Gagal kirim notifikasi sesi dibuka (non-fatal): {e}"
+        )
 
 
 # ─── POST /sesi/tutup ─────────────────────────────────────────

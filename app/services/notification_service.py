@@ -2,6 +2,12 @@
 Push notification via Firebase Cloud Messaging (FCM).
 Setup: pip install firebase-admin
 Taruh credentials JSON di path yang dikonfigurasi di .env sebagai FCM_CREDENTIALS_PATH.
+
+Update Fase B-6:
+- kirim_notifikasi_sesi_dibuka: HAPUS kode_sesi dari payload FCM.
+  Kode hanya tampil di KodeDisplayScreen dosen, tidak dikirim ke mahasiswa
+  via FCM agar mahasiswa yang tidak aktif di Zoom/WhatsApp tidak bisa presensi.
+- Body teks notifikasi sesi dibuka diperbarui: tidak menyebut kode sama sekali.
 """
 import logging
 from typing import Optional
@@ -142,17 +148,47 @@ def kirim_notifikasi_sesi_dibuka(
     """
     Notifikasi ke semua mahasiswa bahwa sesi baru dibuka.
     Return jumlah notifikasi yang berhasil dikirim.
+
+    Fase B-6:
+    - HAPUS kode_sesi dari payload data FCM.
+      Kode hanya dibagikan dosen secara manual via WhatsApp/Zoom
+      ke mahasiswa yang benar-benar hadir di sesi tersebut.
+    - Body teks tidak menyebut kode sama sekali.
+    - Tetap kirim notifikasi agar mahasiswa tahu sesi sudah dibuka
+      dan bisa membuka aplikasi untuk presensi (mode offline)
+      atau menunggu kode dari dosen (mode online).
     """
     if not _init_firebase():
         return 0
 
     emoji  = "💻" if mode == "online" else "📍"
     judul  = f"{emoji} Sesi {nama_matakuliah} Dibuka"
-    isi    = f"Pertemuan ke-{pertemuan_ke} ({mode}). Segera lakukan presensi!"
-    sukses = 0
 
+    # Fase B-6: body berbeda berdasarkan mode, TANPA menyebut kode
+    if mode == "online":
+        isi = (
+            f"Pertemuan ke-{pertemuan_ke} ({mode}) telah dibuka. "
+            "Tunggu kode dari dosen di WhatsApp/Zoom grup lalu buka aplikasi untuk presensi."
+        )
+    else:
+        isi = (
+            f"Pertemuan ke-{pertemuan_ke} ({mode}) telah dibuka. "
+            "Buka aplikasi dan lakukan presensi sekarang."
+        )
+
+    # Fase B-6: payload data FCM — TIDAK menyertakan kode_sesi
+    # Sebelumnya ada: "kode_sesi": kode_sesi  ← DIHAPUS
+    data_payload = {
+        "type"          : "sesi_dibuka",
+        "mode"          : mode,
+        "pertemuan_ke"  : str(pertemuan_ke),
+        "nama_matakuliah": nama_matakuliah,
+        # kode_sesi TIDAK disertakan — kode hanya dibagikan manual oleh dosen
+    }
+
+    sukses = 0
     for token in device_tokens:
-        if kirim_notifikasi(token, judul, isi, {"type": "sesi_dibuka", "mode": mode}):
+        if kirim_notifikasi(token, judul, isi, data_payload):
             sukses += 1
 
     logger.info(f"Notifikasi sesi dibuka: {sukses}/{len(device_tokens)} terkirim")
