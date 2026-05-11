@@ -33,13 +33,13 @@ WEEKDAY_TO_HARI = {
 }
 
 
-def _format_time(t) -> Optional[str]:
+def _format_time(t):
+    """Helper format time → 'HH:MM' string. Sudah ada di dosen_service.py."""
     if t is None:
         return None
     if hasattr(t, "strftime"):
         return t.strftime("%H:%M")
     return str(t)[:5]
-
 
 # ─── 3.1 — BERANDA DOSEN ─────────────────────────────────────
 
@@ -391,22 +391,32 @@ def hapus_tamu(
 # ─── 3.5 — JADWAL PENGGANTI ──────────────────────────────────
 
 def simpan_jadwal_pengganti(
-    db           : Session,
-    dosen        : User,
-    matakuliah_id: UUID,
-    pertemuan_ke : int,
-    jam_mulai_baru   : Optional[str],
-    jam_selesai_baru : Optional[str],
-    ruangan_baru     : Optional[str],
-    keterangan       : Optional[str],
-) -> tuple[bool, str, Optional[dict]]:
+    db               ,
+    dosen            ,
+    matakuliah_id    ,
+    pertemuan_ke  : int,
+    jam_mulai_baru   ,
+    jam_selesai_baru ,
+    ruangan_baru     ,
+    keterangan       ,
+    mode             = None,   # ← BARU Fase B-1: 'offline' | 'online' | None
+):
     """
     Simpan jadwal pengganti. Kalau sudah ada untuk pertemuan ini → UPDATE.
     Kalau belum ada → INSERT.
+ 
+    Update Fase B-1:
+    - Parameter mode ditambahkan (Optional[str], default None)
+    - None = mode tidak berubah dari jadwal reguler kelas
+    - 'offline' / 'online' = mode khusus untuk pertemuan ini
+    - mode disimpan ke kolom jadwal_pengganti.mode di database
+    - mode disertakan di dict response
     """
     from datetime import time as dtime
-
-    def parse_jam(jam_str: Optional[str]) -> Optional[dtime]:
+    from app.models.matakuliah import Matakuliah
+    from app.models.jadwal_pengganti import JadwalPengganti
+ 
+    def parse_jam(jam_str):
         if not jam_str:
             return None
         try:
@@ -414,33 +424,39 @@ def simpan_jadwal_pengganti(
             return dtime(int(h), int(m))
         except Exception:
             return None
-
+ 
     mk = db.query(Matakuliah).filter(Matakuliah.id == matakuliah_id).first()
     if not mk:
         return False, "Matakuliah tidak ditemukan", None
-
+ 
+    # Validasi mode
+    mode_valid = {None, "offline", "online"}
+    if mode not in mode_valid:
+        return False, f"Mode tidak valid: '{mode}'. Pilih: 'offline', 'online', atau kosongkan.", None
+ 
     # Cek sudah ada jadwal pengganti untuk pertemuan ini
     existing = db.query(JadwalPengganti).filter(
         JadwalPengganti.matakuliah_id == matakuliah_id,
         JadwalPengganti.pertemuan_ke  == pertemuan_ke,
     ).first()
-
+ 
     jam_mulai_obj   = parse_jam(jam_mulai_baru)
     jam_selesai_obj = parse_jam(jam_selesai_baru)
-
+ 
     if existing:
-        # UPDATE
+        # UPDATE: semua field termasuk mode
         existing.jam_mulai_baru   = jam_mulai_obj
         existing.jam_selesai_baru = jam_selesai_obj
         existing.ruangan_baru     = ruangan_baru
         existing.keterangan       = keterangan
         existing.dosen_id         = dosen.id
+        existing.mode             = mode        # ← Fase B-1
         db.commit()
         db.refresh(existing)
-        jp = existing
+        jp   = existing
         aksi = "diperbarui"
     else:
-        # INSERT
+        # INSERT baru
         jp = JadwalPengganti(
             matakuliah_id    = matakuliah_id,
             dosen_id         = dosen.id,
@@ -449,21 +465,22 @@ def simpan_jadwal_pengganti(
             jam_selesai_baru = jam_selesai_obj,
             ruangan_baru     = ruangan_baru,
             keterangan       = keterangan,
+            mode             = mode,            # ← Fase B-1
         )
         db.add(jp)
         db.commit()
         db.refresh(jp)
         aksi = "disimpan"
-
+ 
     return True, f"Jadwal pengganti pertemuan {pertemuan_ke} berhasil {aksi}", {
-        "id"             : str(jp.id),
-        "pertemuan_ke"   : jp.pertemuan_ke,
-        "jam_mulai_baru" : _format_time(jp.jam_mulai_baru),
+        "id"              : str(jp.id),
+        "pertemuan_ke"    : jp.pertemuan_ke,
+        "jam_mulai_baru"  : _format_time(jp.jam_mulai_baru),
         "jam_selesai_baru": _format_time(jp.jam_selesai_baru),
-        "ruangan_baru"   : jp.ruangan_baru,
-        "keterangan"     : jp.keterangan,
+        "ruangan_baru"    : jp.ruangan_baru,
+        "mode"            : jp.mode,            # ← Fase B-1
+        "keterangan"      : jp.keterangan,
     }
-
 
 def hapus_jadwal_pengganti(
     db           : Session,
@@ -483,24 +500,29 @@ def hapus_jadwal_pengganti(
     return True, f"Jadwal pengganti pertemuan {pertemuan_ke} berhasil dihapus"
 
 
-def get_jadwal_pengganti_list(
-    db           : Session,
-    matakuliah_id: UUID,
-) -> list:
+def get_jadwal_pengganti_list(db, matakuliah_id) -> list:
+    """
+    List semua jadwal pengganti untuk matakuliah ini.
+ 
+    Update Fase B-1: sertakan field 'mode' di setiap item.
+    """
+    from app.models.jadwal_pengganti import JadwalPengganti
+ 
     jp_list = db.query(JadwalPengganti).filter(
         JadwalPengganti.matakuliah_id == matakuliah_id
     ).order_by(JadwalPengganti.pertemuan_ke).all()
-
+ 
     return [
         {
-            "id"             : str(jp.id),
-            "pertemuan_ke"   : jp.pertemuan_ke,
-            "jam_mulai_baru" : _format_time(jp.jam_mulai_baru),
+            "id"              : str(jp.id),
+            "pertemuan_ke"    : jp.pertemuan_ke,
+            "jam_mulai_baru"  : _format_time(jp.jam_mulai_baru),
             "jam_selesai_baru": _format_time(jp.jam_selesai_baru),
-            "ruangan_baru"   : jp.ruangan_baru,
-            "keterangan"     : jp.keterangan,
-            "created_at"     : jp.created_at.isoformat() if jp.created_at else None,
-            "updated_at"     : jp.updated_at.isoformat() if jp.updated_at else None,
+            "ruangan_baru"    : jp.ruangan_baru,
+            "mode"            : jp.mode,        # ← Fase B-1
+            "keterangan"      : jp.keterangan,
+            "created_at"      : jp.created_at.isoformat() if jp.created_at else None,
+            "updated_at"      : jp.updated_at.isoformat() if jp.updated_at else None,
         }
         for jp in jp_list
     ]

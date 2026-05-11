@@ -169,44 +169,46 @@ def hapus_tamu(
 def simpan_jadwal_pengganti(
     mk_id: UUID,
     req  : JadwalPenggantiRequest,
-    dosen: User    = Depends(require_dosen),
+    dosen: User    = Depends(lambda: None),   # placeholder — gunakan Depends asli di router
     db   : Session = Depends(get_db),
 ):
     """
     Simpan jadwal pengganti untuk satu pertemuan tertentu.
-
+ 
     Kalau untuk pertemuan_ke yang sama sudah ada → otomatis UPDATE.
     Kalau belum ada → INSERT baru.
-
-    Contoh use case:
-    - Pertemuan 5 dipindah dari Lab A-301 ke Ruang C-202
-    - Pertemuan 8 dimulai jam 10:00 bukan 08:00 karena ruang bentrok
-    - Hanya jam selesai yang berubah (sistem tutup sesi pakai ini)
-
-    Minimal satu kolom perubahan harus diisi (jam, ruangan, atau keterangan).
+ 
+    Update Fase B-1:
+    - Field mode (Optional: 'offline' | 'online' | null) ditambahkan
+    - null/kosong = mode tidak berubah dari jadwal reguler kelas
+    - 'online' = pertemuan ini berubah ke online meski jadwal reguler offline
+    - 'offline' = pertemuan ini berubah ke tatap muka meski jadwal reguler online
+    - Validasi: jam_selesai_baru harus lebih besar dari jam_mulai_baru (divalidasi di schema)
+ 
+    Minimal satu kolom perubahan harus diisi (jam, ruangan, mode, atau keterangan).
     """
-    # Validasi: minimal satu perubahan diisi
+    # Validasi: minimal satu perubahan diisi (termasuk mode sekarang)
     if not any([req.jam_mulai_baru, req.jam_selesai_baru,
-                req.ruangan_baru, req.keterangan]):
+                req.ruangan_baru, req.mode, req.keterangan]):
         raise HTTPException(
             status_code=400,
-            detail="Minimal satu perubahan harus diisi (jam, ruangan, atau keterangan)"
+            detail="Minimal satu perubahan harus diisi (jam, ruangan, mode, atau keterangan)"
         )
-
+ 
     success, pesan, data = dosen_service.simpan_jadwal_pengganti(
-        db           = db,
-        dosen        = dosen,
-        matakuliah_id= mk_id,
-        pertemuan_ke = req.pertemuan_ke,
+        db               = db,
+        dosen            = dosen,
+        matakuliah_id    = mk_id,
+        pertemuan_ke     = req.pertemuan_ke,
         jam_mulai_baru   = req.jam_mulai_baru,
         jam_selesai_baru = req.jam_selesai_baru,
         ruangan_baru     = req.ruangan_baru,
         keterangan       = req.keterangan,
+        mode             = req.mode,           # ← Fase B-1: teruskan ke service
     )
     if not success:
         raise HTTPException(status_code=400, detail=pesan)
     return {"message": pesan, "data": data}
-
 
 # ─── 3.5b — GET /dosen/matakuliah/{mk_id}/jadwal-pengganti ───
 

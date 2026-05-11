@@ -1,7 +1,7 @@
 import uuid
 from sqlalchemy import (
     Column, String, Integer, DateTime, Time,
-    ForeignKey, Text
+    ForeignKey, Text, Enum as SAEnum
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -19,11 +19,12 @@ class JadwalPengganti(Base):
     Contoh use case:
     - Pertemuan 5 dipindah dari Lab A-301 ke Ruang C-202
     - Pertemuan 8 dimajukan dari 08:00 jadi 10:00 karena ruang bentrok
-    - Pertemuan 12 diganti hari Selasa karena Senin libur nasional
+    - Pertemuan 12 diganti ke mode Online karena cuaca buruk
 
-    Saat sistem mau tutup sesi otomatis, cek tabel ini dulu.
-    Jika ada JadwalPengganti untuk pertemuan tersebut, pakai
-    jam_selesai_baru. Kalau tidak ada, pakai jam_selesai reguler.
+    Update Fase B-1:
+    - Tambah kolom `mode` (offline | online | null)
+      null  = mode tidak berubah dari jadwal reguler kelas
+      diisi = mode khusus untuk pertemuan ini (override)
 
     UNIQUE constraint: satu matakuliah + satu pertemuan = satu jadwal pengganti.
     Kalau dosen simpan ulang, UPDATE bukan INSERT baru.
@@ -46,12 +47,35 @@ class JadwalPengganti(Base):
     # Pertemuan ke berapa yang diganti (1–16)
     pertemuan_ke   = Column(Integer, nullable=False)
 
-    # Jam baru — nullable karena mungkin hanya ruangan yang ganti
+    # Jam baru — nullable karena mungkin hanya ruangan/mode yang ganti
     jam_mulai_baru   = Column(Time, nullable=True)
     jam_selesai_baru = Column(Time, nullable=True)
 
     # Ruangan baru — nullable kalau tidak ganti ruangan
     ruangan_baru   = Column(String(50), nullable=True)
+
+    # ── Fase B-1: Mode pertemuan pengganti ──────────────────────
+    # nullable=True  → None berarti mode tidak berubah dari jadwal reguler
+    # 'offline'      → pertemuan ini berubah ke tatap muka
+    # 'online'       → pertemuan ini berubah ke online
+    #
+    # Gunakan create_type=False karena enum 'modekelas' sudah ada di DB
+    # (dibuat saat migration tabel presensi / sesi_presensi).
+    mode = Column(
+        SAEnum(
+            "offline", "online",
+            name="modekelas",
+            create_type=False,   # ← PENTING: enum sudah ada, jangan buat ulang
+        ),
+        nullable=True,
+        default=None,
+        comment=(
+            "Mode pertemuan pengganti. "
+            "NULL = tidak berubah dari mode reguler kelas. "
+            "'offline' = ubah ke tatap muka. "
+            "'online'  = ubah ke online."
+        ),
+    )
 
     # Keterangan tambahan dosen, mis. "Pindah karena ruang dipakai seminar"
     keterangan     = Column(Text, nullable=True)

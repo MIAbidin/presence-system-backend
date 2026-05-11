@@ -959,49 +959,51 @@ def hapus_tamu_admin(
 # ════════════════════════════════════════════════════════════
 
 def list_jadwal_pengganti_admin(
-    db            : "Session",
-    matakuliah_id : "Optional[UUID]" = None,
-    dosen_id      : "Optional[UUID]" = None,
-) -> "Dict":
+    db            ,
+    matakuliah_id  = None,
+    dosen_id       = None,
+) -> dict:
     """
     List semua jadwal pengganti dengan filter opsional.
     Return data lengkap termasuk nama matakuliah dan dosen.
     Diurutkan terbaru dulu.
+ 
+    Update Fase B-1: sertakan field 'mode' di setiap item response.
     """
     from app.models.jadwal_pengganti import JadwalPengganti
     from app.models.matakuliah import Matakuliah
     from app.models.user import User
-
+ 
     query = db.query(JadwalPengganti)
-
+ 
     if matakuliah_id:
         query = query.filter(JadwalPengganti.matakuliah_id == matakuliah_id)
     if dosen_id:
         query = query.filter(JadwalPengganti.dosen_id == dosen_id)
-
+ 
     jp_list = query.order_by(JadwalPengganti.created_at.desc()).all()
-
+ 
     # Bulk load matakuliah dan dosen agar tidak N+1
     mk_ids    = list({jp.matakuliah_id for jp in jp_list})
     dosen_ids = list({jp.dosen_id for jp in jp_list})
-
+ 
     mk_map = {
         mk.id: mk for mk in
         db.query(Matakuliah).filter(Matakuliah.id.in_(mk_ids)).all()
     } if mk_ids else {}
-
+ 
     dosen_map = {
         u.id: u for u in
         db.query(User).filter(User.id.in_(dosen_ids)).all()
     } if dosen_ids else {}
-
+ 
     def fmt_time(t):
         if t is None:
             return None
         if hasattr(t, "strftime"):
             return t.strftime("%H:%M")
         return str(t)[:5]
-
+ 
     items = []
     for jp in jp_list:
         mk    = mk_map.get(jp.matakuliah_id)
@@ -1018,16 +1020,16 @@ def list_jadwal_pengganti_admin(
             "jam_mulai_baru"  : fmt_time(jp.jam_mulai_baru),
             "jam_selesai_baru": fmt_time(jp.jam_selesai_baru),
             "ruangan_baru"    : jp.ruangan_baru,
+            "mode"            : jp.mode,           # ← Fase B-1
             "keterangan"      : jp.keterangan,
             "created_at"      : jp.created_at.isoformat() if jp.created_at else None,
             "updated_at"      : jp.updated_at.isoformat() if jp.updated_at else None,
         })
-
+ 
     return {
         "total": len(items),
         "items": items,
     }
-
 
 def delete_jadwal_pengganti_admin(
     db   : "Session",

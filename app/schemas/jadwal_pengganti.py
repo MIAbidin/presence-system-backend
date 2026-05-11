@@ -1,6 +1,12 @@
 # app/schemas/jadwal_pengganti.py
 """
 Schema Pydantic untuk endpoint jadwal pengganti dan manajemen tamu.
+
+Update Fase B-1:
+- Tambah field mode (Optional[str]) di JadwalPenggantiRequest
+- Tambah field mode (Optional[str]) di JadwalPenggantiResponse
+- Validasi: mode harus 'offline', 'online', atau None
+
 Dipakai di:
   - POST /dosen/matakuliah/{mk_id}/jadwal-pengganti
   - GET  /dosen/matakuliah/{mk_id}/jadwal-pengganti
@@ -9,7 +15,7 @@ Dipakai di:
   - DELETE /dosen/matakuliah/{mk_id}/tamu/{mahasiswa_id}
 """
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import Optional, Literal
 from uuid import UUID
 from datetime import time, datetime
 
@@ -29,6 +35,17 @@ class JadwalPenggantiRequest(BaseModel):
     keterangan        : Optional[str] = Field(None,
                                 description="Keterangan, mis. Pindah karena ruang dipakai seminar")
 
+    # ── Fase B-1: field mode baru ─────────────────────────────
+    mode              : Optional[Literal["offline", "online"]] = Field(
+        None,
+        description=(
+            "Mode pertemuan pengganti. "
+            "Kosongkan / null = mode tidak berubah dari jadwal reguler kelas. "
+            "'offline' = pertemuan ini berubah ke tatap muka. "
+            "'online'  = pertemuan ini berubah ke online."
+        ),
+    )
+
     @field_validator('jam_mulai_baru', 'jam_selesai_baru', mode='before')
     @classmethod
     def validasi_format_jam(cls, v):
@@ -43,6 +60,33 @@ class JadwalPenggantiRequest(BaseModel):
         except Exception:
             raise ValueError(f"Format jam tidak valid: '{v}'. Gunakan HH:MM, mis. 08:30")
 
+    @field_validator('jam_selesai_baru', mode='before')
+    @classmethod
+    def validasi_jam_selesai_lebih_besar(cls, v, info):
+        """
+        Validasi: jam_selesai_baru harus lebih besar dari jam_mulai_baru
+        jika keduanya diisi.
+        """
+        if v is None:
+            return v
+        jam_mulai = info.data.get('jam_mulai_baru')
+        if jam_mulai is None:
+            return v
+        try:
+            h_m, m_m = jam_mulai.split(':')
+            h_s, m_s = v.split(':')
+            total_mulai   = int(h_m) * 60 + int(m_m)
+            total_selesai = int(h_s) * 60 + int(m_s)
+            if total_selesai <= total_mulai:
+                raise ValueError(
+                    f"jam_selesai_baru ({v}) harus lebih besar dari "
+                    f"jam_mulai_baru ({jam_mulai})"
+                )
+        except ValueError as e:
+            if "harus lebih besar" in str(e):
+                raise
+        return v
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -50,7 +94,8 @@ class JadwalPenggantiRequest(BaseModel):
                 "jam_mulai_baru"  : "10:00",
                 "jam_selesai_baru": "12:30",
                 "ruangan_baru"    : "C-202",
-                "keterangan"      : "Pindah karena Lab A-301 dipakai seminar"
+                "mode"            : "online",
+                "keterangan"      : "Pindah ke online karena dosen dinas luar kota"
             }
         }
 
@@ -63,6 +108,10 @@ class JadwalPenggantiResponse(BaseModel):
     jam_mulai_baru   : Optional[str] = None   # format "HH:MM"
     jam_selesai_baru : Optional[str] = None
     ruangan_baru     : Optional[str] = None
+
+    # ── Fase B-1: field mode di response ──────────────────────
+    mode             : Optional[str] = None   # 'offline' | 'online' | null
+
     keterangan       : Optional[str] = None
     created_at       : datetime
     updated_at       : datetime
