@@ -10,6 +10,11 @@ Tambahan: GET /sesi/riwayat-dosen
 - List semua sesi yang pernah dibuat dosen
 - Dengan ringkasan statistik kehadiran per sesi
 - Dipakai oleh tab Rekap di MainDosenScreen (RekapListScreen)
+
+Fase B-2 (BARU): GET /sesi/aktif-mahasiswa
+- Response lengkap dengan matakuliah, kelas, dosen, ruangan, koordinat
+- Auto-detect mode berdasarkan jadwal mahasiswa hari ini
+- Tidak pernah return 404 — selalu 200 dengan ada_sesi flag
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,10 +23,16 @@ from uuid import UUID
 from typing import Optional
 
 from app.database.db import get_db
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.sesi import SesiPresensi, SesiStatus, SesiMode
 from app.models.presensi import Presensi, PresensiStatus
 from app.schemas.sesi import BukaSesiRequest, SesiResponse, ExtendKodeRequest
+
+# ── Fase B-2: import schema dan service baru ──────────────────
+from app.schemas.sesi_aktif import SesiAktifWrapper
+from app.services.sesi_aktif_service import get_sesi_aktif_mahasiswa_detail
+# ─────────────────────────────────────────────────────────────
+
 from app.services import sesi_service
 from app.routers.auth import get_current_user
 
@@ -150,7 +161,6 @@ def regen_kode(
 
 
 # ─── GET /sesi/riwayat-dosen ──────────────────────────────────
-# BARU: Dipakai oleh RekapListScreen (tab Rekap) di Flutter
 
 @router.get("/riwayat-dosen")
 def get_riwayat_sesi_dosen(
@@ -164,19 +174,9 @@ def get_riwayat_sesi_dosen(
     Diurutkan dari yang terbaru.
 
     Dipakai oleh tab Rekap di MainDosenScreen (RekapListScreen).
-
-    Query param opsional:
-    - limit: jumlah item per halaman (default 50)
-    - skip : offset untuk pagination (default 0)
-
-    Response per item:
-    - sesi_id, mode, pertemuan_ke, matakuliah, kode_mk, status
-    - waktu_buka, waktu_tutup
-    - Statistik ringkas: total_mhs, hadir, terlambat, absen, izin, sakit, persentase
     """
     from collections import defaultdict
 
-    # Ambil semua sesi dosen, urutkan terbaru dulu
     sesi_list = (
         db.query(SesiPresensi)
         .filter(SesiPresensi.dosen_id == dosen.id)
@@ -189,7 +189,6 @@ def get_riwayat_sesi_dosen(
     if not sesi_list:
         return {"total": 0, "sesi_list": []}
 
-    # Bulk query presensi untuk semua sesi sekaligus (hindari N+1 query)
     sesi_ids = [s.id for s in sesi_list]
     all_presensi = (
         db.query(Presensi)
@@ -197,7 +196,6 @@ def get_riwayat_sesi_dosen(
         .all()
     )
 
-    # Group presensi by sesi_id untuk lookup O(1)
     presensi_by_sesi: dict = defaultdict(list)
     for p in all_presensi:
         presensi_by_sesi[p.sesi_id].append(p)
@@ -207,7 +205,6 @@ def get_riwayat_sesi_dosen(
         mk            = sesi.matakuliah
         presensi_sesi = presensi_by_sesi.get(sesi.id, [])
 
-        # Hitung statistik dari data yang sudah di-cache (no extra query)
         total     = len(presensi_sesi)
         hadir     = sum(1 for p in presensi_sesi if p.status == PresensiStatus.hadir)
         terlambat = sum(1 for p in presensi_sesi if p.status == PresensiStatus.terlambat)
@@ -226,7 +223,6 @@ def get_riwayat_sesi_dosen(
             "status"      : sesi.status.value,
             "waktu_buka"  : sesi.waktu_buka.isoformat()  if sesi.waktu_buka  else None,
             "waktu_tutup" : sesi.waktu_tutup.isoformat() if sesi.waktu_tutup else None,
-            # Statistik ringkas
             "total_mhs"   : total,
             "hadir"       : hadir,
             "terlambat"   : terlambat,
@@ -274,6 +270,7 @@ def cek_kode_sesi(
 
 
 # ─── GET /sesi/aktif ──────────────────────────────────────────
+# Endpoint lama — tetap ada untuk kompatibilitas
 
 @router.get("/aktif")
 def cek_sesi_aktif(
@@ -295,6 +292,58 @@ def cek_sesi_aktif(
             "detik_tersisa": sesi_service.hitung_detik_tersisa(sesi),
         }
     }
+
+
+# ─── GET /sesi/aktif-mahasiswa ────────────────────────────────
+# FASE B-2: Endpoint baru — response lengkap untuk auto-detect mode Flutter
+
+@router.get("/aktif-mahasiswa", response_model=SesiAktifWrapper)
+def get_sesi_aktif_mahasiswa(
+    current_user: User    = Depends(get_current_user),
+    db          : Session = Depends(get_db),
+):
+    """
+    Fase B-2 — Ambil sesi aktif yang cocok dengan jadwal mahasiswa saat ini.
+
+    Berbeda dengan GET /sesi/aktif yang perlu matakuliah_id sebagai parameter,
+    endpoint ini otomatis mencari sesi berdasarkan:
+    - Jadwal MK yang diikuti mahasiswa (via mahasiswa_matakuliah)
+    - Hari ini (WIB) dan window jam ±30 menit dari jam_mulai kelas
+    - Belum dipresensi oleh mahasiswa ini
+
+    Dipakai Flutter SesiDetectService untuk auto-detect mode presensi.
+    Tidak ada lagi pilihan mode manual — sistem yang menentukan.
+
+    Response format:
+    ```json
+    {
+      "ada_sesi": true,
+      "sesi": {
+        "sesi_id": "...",
+        "mode": "offline",
+        "matakuliah_nama": "Pemrograman Mobile",
+        "kode_kelas": "A",
+        "dosen_nama": "Dr. Budi Santoso",
+        "ruangan": "Lab Mobile Computing",
+        "koordinat_lat": -5.131380,
+        "koordinat_lng": 119.490840,
+        ...
+      }
+    }
+    ```
+
+    Flutter logic berdasarkan response:
+    - ada_sesi=false             → tampil tombol 'Ikut sebagai Tamu'
+    - ada_sesi=true, mode=online → navigate ke KodeSesiScreen (auto)
+    - ada_sesi=true, mode=offline→ langsung buka kamera + validasi GPS
+
+    Selalu return HTTP 200, tidak pernah 404.
+    """
+    # Dosen/admin yang hit endpoint ini → return false (bukan error)
+    if current_user.role != UserRole.mahasiswa:
+        return SesiAktifWrapper(ada_sesi=False, sesi=None)
+
+    return get_sesi_aktif_mahasiswa_detail(db, current_user.id)
 
 
 # ─── GET /sesi/aktif-dosen ────────────────────────────────────
@@ -348,15 +397,12 @@ def get_peserta(
     if not sesi:
         raise HTTPException(status_code=404, detail="Sesi tidak ditemukan")
 
-    # Ambil semua presensi di sesi ini
     presensi_list = db.query(Presensi).filter(Presensi.sesi_id == sesi_id).all()
 
-    # Bulk query: mahasiswa_matakuliah untuk sesi ini (dapat is_tamu + kelas_asal)
     from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
     mk_rows = db.query(MahasiswaMatakuliah).filter(
         MahasiswaMatakuliah.matakuliah_id == sesi.matakuliah_id
     ).all()
-    # Map mahasiswa_id → row
     mk_row_map = {str(row.mahasiswa_id): row for row in mk_rows}
 
     hadir     = sum(1 for p in presensi_list if p.status == PresensiStatus.hadir)
@@ -378,12 +424,10 @@ def get_peserta(
             "akurasi_wajah" : p.akurasi_wajah,
             "mode_kelas"    : p.mode_kelas.value,
             "catatan"       : p.catatan,
-            # Fase 3.6: is_tamu dan kelas_asal dari bulk query (bukan loop query)
             "is_tamu"       : mk_row.is_tamu    if mk_row else False,
             "kelas_asal"    : mk_row.kelas_asal if mk_row else None,
         })
 
-    # Urutkan: hadir terbaru di atas, absen di bawah
     status_order = {"hadir": 0, "terlambat": 1, "izin": 2, "sakit": 3, "absen": 4}
     detail.sort(key=lambda x: (
         status_order.get(x["status"], 99),
