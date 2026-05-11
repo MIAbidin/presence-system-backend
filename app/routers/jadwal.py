@@ -3,6 +3,18 @@
 Endpoint jadwal mahasiswa:
   GET /jadwal/hari-ini   — jadwal + status presensi hari ini
   GET /jadwal/mingguan   — jadwal seminggu penuh
+  GET /jadwal/hari/{nama_hari} — jadwal hari tertentu
+
+Update Fase B-5:
+  Semua response sekarang menyertakan:
+    - mode_efektif          : mode yang berlaku (dari jadwal_pengganti.mode jika ada)
+    - has_jadwal_pengganti  : True jika pertemuan berikutnya punya jadwal pengganti
+    - jadwal_pengganti_info : detail perubahan (jam, ruangan, mode baru)
+
+  Flutter JadwalScreen menggunakan field ini untuk:
+    - Badge mode (ModeBadge widget) di setiap kartu jadwal
+    - Banner kuning 'Jadwal Diganti' (muncul jika has_jadwal_pengganti=True)
+    - Banner berisi jam baru, ruangan baru, dan MODE baru
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,6 +27,8 @@ from app.services import home_service
 from app.schemas.home import JadwalItem
 
 router = APIRouter(prefix="/jadwal", tags=["Jadwal"])
+
+HARI_VALID = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
 
 
 def require_mahasiswa(current_user: User = Depends(get_current_user)):
@@ -34,9 +48,14 @@ def jadwal_hari_ini(
     Jadwal matakuliah mahasiswa untuk hari ini.
 
     Setiap item dilengkapi:
-    - `ada_sesi_aktif`  : apakah dosen sudah membuka sesi
-    - `sesi_id`         : UUID sesi jika aktif (langsung bisa dipakai untuk presensi)
-    - `status_presensi` : status mahasiswa di sesi hari ini (null jika belum presensi)
+    - `ada_sesi_aktif`        : apakah dosen sudah membuka sesi
+    - `sesi_id`               : UUID sesi jika aktif
+    - `status_presensi`       : status mahasiswa di sesi hari ini
+    - `mode_efektif`          : mode yang berlaku ('offline'|'online'|null)
+                                Berasal dari jadwal_pengganti.mode jika ada,
+                                null berarti mode tidak ditetapkan secara khusus.
+    - `has_jadwal_pengganti`  : True jika pertemuan berikutnya ada jadwal pengganti
+    - `jadwal_pengganti_info` : detail perubahan jam, ruangan, dan mode baru
     """
     return home_service.get_jadwal_hari_ini(db, mahasiswa.id)
 
@@ -51,15 +70,35 @@ def jadwal_mingguan(
     """
     Jadwal seminggu penuh dikelompokkan per hari.
 
+    Fase B-5: setiap item jadwal menyertakan mode_efektif,
+    has_jadwal_pengganti, dan jadwal_pengganti_info.
+
     Response format:
     ```json
     {
-      "Senin"  : [{ matakuliah_id, nama, jam_mulai, ... }, ...],
-      "Selasa" : [...],
+      "Senin": [
+        {
+          "matakuliah_id": "...",
+          "nama": "Pemrograman Mobile",
+          "kode": "TIF3232209",
+          "mode_efektif": "online",
+          "has_jadwal_pengganti": true,
+          "jadwal_pengganti_info": {
+            "pertemuan_ke": 10,
+            "jam_mulai_baru": "10:00",
+            "jam_selesai_baru": "12:30",
+            "ruangan_baru": "C-202",
+            "mode": "online",
+            "keterangan": "Pindah ke online karena dosen dinas"
+          },
+          ...
+        }
+      ],
+      "Selasa": [...],
       ...
     }
     ```
-    Hari tanpa jadwal tetap dikembalikan sebagai list kosong.
+    Hari tanpa jadwal dikembalikan sebagai list kosong.
     """
     return home_service.get_jadwal_mingguan(db, mahasiswa.id)
 
@@ -75,46 +114,16 @@ def jadwal_per_hari(
     """
     Jadwal untuk hari tertentu.
     `nama_hari` harus salah satu dari: Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu.
+
+    Fase B-5: response menyertakan mode_efektif, has_jadwal_pengganti,
+    dan jadwal_pengganti_info sama seperti endpoint hari-ini dan mingguan.
     """
-    hari_valid = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-    # Normalize capitalization
     nama_hari = nama_hari.capitalize()
-    if nama_hari not in hari_valid:
+    if nama_hari not in HARI_VALID:
         raise HTTPException(
             status_code=400,
-            detail=f"Nama hari tidak valid. Pilih dari: {', '.join(hari_valid)}"
+            detail=f"Nama hari tidak valid. Pilih dari: {', '.join(HARI_VALID)}"
         )
 
-    from app.models.matakuliah import Matakuliah
-    from app.models.mahasiswa_matakuliah import MahasiswaMatakuliah
-
-    rows = (
-        db.query(MahasiswaMatakuliah)
-        .filter(MahasiswaMatakuliah.mahasiswa_id == mahasiswa.id)
-        .all()
-    )
-    if not rows:
-        return []
-
-    mk_ids = [r.matakuliah_id for r in rows]
-    matakuliah_list = (
-        db.query(Matakuliah)
-        .filter(Matakuliah.id.in_(mk_ids), Matakuliah.hari == nama_hari)
-        .all()
-    )
-
-    result = []
-    for mk in matakuliah_list:
-        result.append(JadwalItem(
-            matakuliah_id = mk.id,
-            kode          = mk.kode,
-            nama          = mk.nama,
-            sks           = mk.sks,
-            hari          = mk.hari,
-            jam_mulai     = mk.jam_mulai.strftime("%H:%M") if mk.jam_mulai else None,
-            jam_selesai   = mk.jam_selesai.strftime("%H:%M") if mk.jam_selesai else None,
-            ruangan       = mk.ruangan,
-        ))
-
-    result.sort(key=lambda x: x.jam_mulai or "99:99")
-    return result
+    # Gunakan helper di home_service yang sudah include Fase B-5
+    return home_service.get_jadwal_per_hari(db, mahasiswa.id, nama_hari)
